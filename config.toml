@@ -1,0 +1,21 @@
+# config.toml
+[global]
+basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/2MPP_MULTIBIN_N256_DES_V2/R1024"
+observer_coords = [500.0, 500.0, 500.0]
+output_dir = "output"
+
+[mode1]
+mcmc_start = 0
+mcmc_end = 77
+mass_cut = 0.5e15
+radius_cut = 300.0
+eps = 7.5
+min_samples = 5
+
+[mode2]
+target_snapshot = 30
+min_cluster_size = 60
+
+[mode3]
+min_members_plot = 40
+figure_dpi = 150
