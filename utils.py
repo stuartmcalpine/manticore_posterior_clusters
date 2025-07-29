@@ -43,9 +43,10 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
             cluster_grp.attrs['mass_std'] = cluster['mass_std']
             
             member_grp = cluster_grp.create_group('members')
-            member_grp.create_dataset('positions', data=cluster['member_data']['positions'])
-            member_grp.create_dataset('masses', data=cluster['member_data']['masses'])
-            member_grp.create_dataset('progenitor_indices', data=cluster['member_data']['progenitor_indices'])
+            
+            # Save all member data properties
+            for key, data in cluster['member_data'].items():
+                member_grp.create_dataset(key.replace('/', '_'), data=data)
             
             mcmc_ids = np.array([m['mcmc_id'] for m in cluster['members']])
             orig_indices = np.array([m['original_index'] for m in cluster['members']])
@@ -78,6 +79,14 @@ def load_clusters_from_hdf5(config, filename="clusters.h5"):
                     'original_index': int(orig_indices[i])
                 })
             
+            # Load all member data properties
+            member_data = {}
+            for key in member_grp.keys():
+                if key not in ['mcmc_ids', 'original_indices']:
+                    # Convert back to original property name format
+                    original_key = key.replace('_', '/')
+                    member_data[original_key] = member_grp[key][:]
+            
             cluster = {
                 'cluster_id': int(cluster_grp.attrs['cluster_id']),
                 'cluster_size': int(cluster_grp.attrs['cluster_size']),
@@ -86,11 +95,7 @@ def load_clusters_from_hdf5(config, filename="clusters.h5"):
                 'position_std': cluster_grp.attrs['position_std'],
                 'mass_std': float(cluster_grp.attrs['mass_std']),
                 'members': members,
-                'member_data': {
-                    'positions': member_grp['positions'][:],
-                    'masses': member_grp['masses'][:],
-                    'progenitor_indices': member_grp['progenitor_indices'][:]
-                }
+                'member_data': member_data
             }
             clusters.append(cluster)
     
@@ -115,9 +120,13 @@ def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, filename="ha
             trace_grp.attrs['mcmc_id'] = trace_data['mcmc_id']
             trace_grp.attrs['original_index'] = trace_data['original_index']
             trace_grp.attrs['cluster_id'] = trace_data['cluster_id']
-            trace_grp.create_dataset('positions', data=trace_data['positions'])
-            trace_grp.create_dataset('masses', data=trace_data['masses'])
             trace_grp.create_dataset('snapshots', data=trace_data['snapshots'])
+            
+            # Save all traced properties
+            for key, data in trace_data.items():
+                if key not in ['mcmc_id', 'original_index', 'cluster_id', 'snapshots']:
+                    dataset_name = key.replace('/', '_')
+                    trace_grp.create_dataset(dataset_name, data=data)
 
 def load_halo_traces_from_hdf5(config, filename="halo_traces.h5"):
     filepath = os.path.join(config.global_config.output_dir, filename)
@@ -137,9 +146,14 @@ def load_halo_traces_from_hdf5(config, filename="halo_traces.h5"):
                 'mcmc_id': int(trace_grp.attrs['mcmc_id']),
                 'original_index': int(trace_grp.attrs['original_index']),
                 'cluster_id': int(trace_grp.attrs['cluster_id']),
-                'positions': trace_grp['positions'][:],
-                'masses': trace_grp['masses'][:],
                 'snapshots': trace_grp['snapshots'][:]
             }
+            
+            # Load all traced properties
+            for key in trace_grp.keys():
+                if key != 'snapshots':
+                    # Convert back to original property name format
+                    original_key = key.replace('_', '/')
+                    halo_traces[halo_key][original_key] = trace_grp[key][:]
     
     return halo_traces, metadata

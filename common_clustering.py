@@ -43,28 +43,47 @@ def enforce_mcmc_constraint(cluster_labels, positions, mcmc_ids):
     return cluster_labels
 
 def combine_haloes(mcmc_data):
-    combined_positions = []
-    combined_masses = []
-    combined_progenitor_indices = []
+    combined_data = {}
     halo_provenance = []
     
+    # Get all available property keys from first MCMC sample
+    first_mcmc = next(iter(mcmc_data.values()))
+    property_keys = list(first_mcmc.keys())
+    
+    # Initialize combined arrays for each property
+    for key in property_keys:
+        combined_data[key] = []
+    
     for mcmc_id, data in mcmc_data.items():
-        positions = data['BoundSubhalo/CentreOfMass']
-        masses = data['BoundSubhalo/TotalMass']
-        progenitor_indices = data['SOAP/ProgenitorIndex']
+        n_haloes = len(data['BoundSubhalo/TotalMass'])
         
-        combined_positions.append(positions)
-        combined_masses.append(masses)
-        combined_progenitor_indices.append(progenitor_indices)
+        # Combine all properties
+        for key in property_keys:
+            if key in data:
+                combined_data[key].append(data[key])
+            else:
+                # Handle missing properties with appropriate fill values
+                if 'Mass' in key:
+                    fill_shape = (n_haloes,)
+                elif 'CentreOfMass' in key:
+                    fill_shape = (n_haloes, 3)
+                else:
+                    fill_shape = (n_haloes,)
+                combined_data[key].append(np.full(fill_shape, np.nan))
         
-        for i in range(len(masses)):
+        # Track provenance
+        for i in range(n_haloes):
             halo_provenance.append({'mcmc_id': mcmc_id, 'original_index': i})
     
-    combined_positions = np.vstack(combined_positions)
-    combined_masses = np.concatenate(combined_masses)
-    combined_progenitor_indices = np.concatenate(combined_progenitor_indices)
+    # Stack/concatenate all properties
+    for key in property_keys:
+        if combined_data[key]:
+            if len(combined_data[key][0].shape) == 1:
+                combined_data[key] = np.concatenate(combined_data[key])
+            else:
+                combined_data[key] = np.vstack(combined_data[key])
     
-    return combined_positions, combined_masses, combined_progenitor_indices, halo_provenance
+    return combined_data, halo_provenance
 
 def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     mcmc_data = {}
@@ -72,13 +91,40 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     # Use radius_outer for initial loading if provided, otherwise use radius_cut
     initial_radius_cut = radius_outer if radius_outer is not None else config.mode1.radius_cut
     
+    # Extended property list
+    to_load = [
+        "BoundSubhalo/TotalMass",
+        "BoundSubhalo/CentreOfMass", 
+        "BoundSubhalo/CentreOfMassVelocity",
+        "SOAP/ProgenitorIndex",
+        "BoundSubhalo/MaximumCircularVelocity",
+        "BoundSubhalo/EncloseRadius",
+        "SO/200_crit/TotalMass",
+        "SO/200_crit/CentreOfMass",
+        "SO/200_crit/CentreOfMassVelocity",
+        "SO/200_crit/Concentration",
+        "SO/200_crit/SORadius",
+        "SO/200_crit/MassFractionExternal",
+        "SO/200_crit/MassFractionSatellites",
+        "SO/500_crit/TotalMass",
+        "SO/500_crit/CentreOfMass",
+        "SO/500_crit/CentreOfMassVelocity",
+        "SO/500_crit/Concentration",
+        "SO/500_crit/SORadius",
+        "SO/500_crit/MassFractionExternal",
+        "SO/500_crit/MassFractionSatellites",
+        "SOAP/SubhaloRankByBoundMass"
+    ]
+    
     for mcmc_id in range(config.mode1.mcmc_start, config.mode1.mcmc_end + 1):
         filename = os.path.join(config.global_config.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
         soap_data = SOAPData(filename, mass_cut=config.mode1.mass_cut, radius_cut=initial_radius_cut)
-        to_load = ["BoundSubhalo/TotalMass", "SO/200_crit/SORadius", "BoundSubhalo/CentreOfMass", "SOAP/ProgenitorIndex"]
         soap_data.load_groups(properties=to_load, only_centrals=True)
         soap_data.set_observer(config.global_config.observer_coords, skip_redshift=True)
-        
+       
+        # Don't want to keep redshift
+        del soap_data.data["redshift"]
+
         # Apply radius filtering if both inner and outer are specified
         if radius_inner is not None and radius_outer is not None:
             distances = soap_data.data['dist']
@@ -100,8 +146,10 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     return mcmc_data
 
 def find_stable_haloes(mcmc_data, config):
-    positions, masses, progenitor_indices, halo_provenance = combine_haloes(mcmc_data)
+    combined_data, halo_provenance = combine_haloes(mcmc_data)
     
+    positions = combined_data['BoundSubhalo/CentreOfMass']
+    masses = combined_data['BoundSubhalo/TotalMass']
     mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
     
     # Run standard DBSCAN
@@ -120,7 +168,6 @@ def find_stable_haloes(mcmc_data, config):
         cluster_mask = cluster_labels == cluster_id
         cluster_positions = positions[cluster_mask]
         cluster_masses = masses[cluster_mask]
-        cluster_progenitor_indices = progenitor_indices[cluster_mask]
         cluster_provenance = [halo_provenance[i] for i in range(len(halo_provenance)) if cluster_mask[i]]
         
         cluster_size = len(cluster_positions)
@@ -128,6 +175,11 @@ def find_stable_haloes(mcmc_data, config):
         mean_mass = np.mean(cluster_masses)
         position_std = np.std(cluster_positions, axis=0)
         mass_std = np.std(cluster_masses)
+        
+        # Extract all member data for this cluster
+        member_data = {}
+        for key, data in combined_data.items():
+            member_data[key] = data[cluster_mask]
         
         stable_haloes.append({
             'cluster_id': cluster_id,
@@ -137,11 +189,7 @@ def find_stable_haloes(mcmc_data, config):
             'position_std': position_std,
             'mass_std': mass_std,
             'members': cluster_provenance,
-            'member_data': {
-                'positions': cluster_positions,
-                'masses': cluster_masses,
-                'progenitor_indices': cluster_progenitor_indices
-            }
+            'member_data': member_data
         })
     
     return stable_haloes, positions, masses, halo_provenance, cluster_labels

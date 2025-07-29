@@ -12,40 +12,104 @@ class HaloTracer:
         self.basedir = basedir
         self.observer_coords = observer_coords
         self.rank = rank
+        
+        # Extended property list
+        self.to_load = [
+            "BoundSubhalo/TotalMass",
+            "BoundSubhalo/CentreOfMass", 
+            "BoundSubhalo/CentreOfMassVelocity",
+            "SOAP/ProgenitorIndex",
+            "SOAP/DescendantIndex",
+            "BoundSubhalo/MaximumCircularVelocity",
+            "BoundSubhalo/EncloseRadius",
+            "SO/200_crit/TotalMass",
+            "SO/200_crit/CentreOfMass",
+            "SO/200_crit/CentreOfMassVelocity",
+            "SO/200_crit/Concentration",
+            "SO/200_crit/SORadius",
+            "SO/200_crit/MassFractionExternal",
+            "SO/200_crit/MassFractionSatellites",
+            "SO/500_crit/TotalMass",
+            "SO/500_crit/CentreOfMass",
+            "SO/500_crit/CentreOfMassVelocity",
+            "SO/500_crit/Concentration",
+            "SO/500_crit/SORadius",
+            "SO/500_crit/MassFractionExternal",
+            "SO/500_crit/MassFractionSatellites",
+            "SOAP/SubhaloRankByBoundMass"
+        ]
     
     def _load_snapshot(self, mcmc_id, snap_num):
+        """Load a single snapshot with validation data"""
         filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_{snap_num:04d}.hdf5")
         
         if snap_num == 77:
             soap_data = SOAPData(filename, mass_cut=1e15, radius_cut=300)
-            soap_data.load_groups(properties=["BoundSubhalo/CentreOfMass", "BoundSubhalo/TotalMass", "SOAP/ProgenitorIndex", "SOAP/DescendantIndex"], only_centrals=True)
+            soap_data.load_groups(properties=self.to_load, only_centrals=True)
         else:
             soap_data = SOAPData(filename)
-            soap_data.load_groups(properties=["BoundSubhalo/CentreOfMass", "BoundSubhalo/TotalMass", "SOAP/ProgenitorIndex", "SOAP/DescendantIndex"], only_centrals=False)
+            soap_data.load_groups(properties=self.to_load, only_centrals=False)
         
         soap_data.set_observer(self.observer_coords, skip_redshift=True)
         
-        return {
-            'positions': soap_data.data['BoundSubhalo/CentreOfMass'],
-            'masses': soap_data.data['BoundSubhalo/TotalMass'],
-            'progenitor_indices': soap_data.data['SOAP/ProgenitorIndex'],
-            'descendant_indices': soap_data.data['SOAP/DescendantIndex']
-        }
+        # Remove redshift
+        del soap_data.data["redshift"]
+
+        return soap_data.data.copy()
+    
+    def _validate_links(self, current_snap, prev_snap, current_indices, mcmc_id):
+        """Validate progenitor-descendant links between snapshots"""
+        validation_errors = 0
+        
+        for j, current_idx in enumerate(current_indices):
+            if current_idx < 0 or current_idx >= len(prev_snap['BoundSubhalo/CentreOfMass']):
+                continue
+                
+            prog_idx = current_snap['SOAP/ProgenitorIndex'][j] if j < len(current_snap['SOAP/ProgenitorIndex']) else -1
+            
+            if prog_idx >= 0 and prog_idx < len(prev_snap['SOAP/DescendantIndex']):
+                expected_descendant = prev_snap['SOAP/DescendantIndex'][prog_idx]
+                if expected_descendant != j:
+                    validation_errors += 1
+                    print(f"  Validation error: MCMC {mcmc_id}, halo {j} -> prog {prog_idx}, but prog has descendant {expected_descendant}")
+        
+        if validation_errors > 0:
+            print(f"  Found {validation_errors} validation errors for MCMC {mcmc_id}")
+        
+        return validation_errors
     
     def trace_haloes_for_mcmc(self, halo_list, mcmc_id, target_snapshot):
         n_snapshots = 77 - target_snapshot + 1
         n_haloes = len(halo_list)
         
-        position_histories = np.full((n_haloes, n_snapshots, 3), np.nan)
-        mass_histories = np.full((n_haloes, n_snapshots), np.nan)
+        # Initialize history arrays for all properties
+        property_histories = {}
         valid_flags = np.zeros((n_haloes, n_snapshots), dtype=bool)
         current_indices = np.array([h['progenitor_index'] for h in halo_list])
+        
+        # Get property keys from the first halo's data
+        first_halo_data = {k: v for k, v in halo_list[0].items() if k not in ['mcmc_id', 'original_index', 'cluster_id', 'progenitor_index']}
+        property_keys = list(first_halo_data.keys())
+        
+        # Initialize arrays for each property
+        for key in property_keys:
+            if isinstance(first_halo_data[key], np.ndarray) and len(first_halo_data[key].shape) > 0:
+                if len(first_halo_data[key]) == 3:  # 3D vector
+                    property_histories[key] = np.full((n_haloes, n_snapshots, 3), np.nan)
+                else:
+                    property_histories[key] = np.full((n_haloes, n_snapshots), np.nan)
+            else:
+                property_histories[key] = np.full((n_haloes, n_snapshots), np.nan)
         
         # Initialize snapshot 77 data
         for i, halo in enumerate(halo_list):
             if halo['progenitor_index'] >= 0:
-                position_histories[i, 0] = halo['position']
-                mass_histories[i, 0] = halo['mass']
+                for key in property_keys:
+                    if key in halo:
+                        if isinstance(halo[key], np.ndarray) and len(halo[key]) == 3:
+                            property_histories[key][i, 0] = halo[key]
+                        else:
+                            property_histories[key][i, 0] = halo[key]
                 valid_flags[i, 0] = True
         
         # Process each snapshot backward
@@ -58,26 +122,29 @@ class HaloTracer:
             
             snapshot_data = self._load_snapshot(mcmc_id, snap_num)
             
-            pos_data = snapshot_data['positions']
-            mass_data = snapshot_data['masses']
-            prog_data = snapshot_data['progenitor_indices']
-            
             for i in range(n_haloes):
                 if not active_mask[i]:
                     continue
                     
                 current_idx = current_indices[i]
                 
-                if current_idx >= len(pos_data):
+                if current_idx >= len(snapshot_data['BoundSubhalo/CentreOfMass']):
                     current_indices[i] = -1
                     continue
                 
-                position_histories[i, snap_idx + 1] = pos_data[current_idx]
-                mass_histories[i, snap_idx + 1] = mass_data[current_idx]
+                # Store all properties for this halo at this snapshot
+                for key in property_keys:
+                    if key in snapshot_data:
+                        data_value = snapshot_data[key][current_idx]
+                        if isinstance(data_value, np.ndarray) and len(data_value) == 3:
+                            property_histories[key][i, snap_idx + 1] = data_value
+                        else:
+                            property_histories[key][i, snap_idx + 1] = data_value
+                
                 valid_flags[i, snap_idx + 1] = True
                 
                 if snap_num > target_snapshot:
-                    progenitor_idx = prog_data[current_idx]
+                    progenitor_idx = snapshot_data['SOAP/ProgenitorIndex'][current_idx]
                     current_indices[i] = progenitor_idx if progenitor_idx >= 0 else -1
                 else:
                     current_indices[i] = -1
@@ -87,8 +154,6 @@ class HaloTracer:
         for i, halo in enumerate(halo_list):
             valid_snaps = valid_flags[i, :]
             if np.sum(valid_snaps) > 1:
-                valid_positions = position_histories[i, valid_snaps]
-                valid_masses = mass_histories[i, valid_snaps]
                 valid_snapshots = np.array([77 - j for j in range(n_snapshots)])[valid_snaps]
                 
                 halo_key = f"mcmc_{mcmc_id}_halo_{halo['original_index']}"
@@ -96,10 +161,13 @@ class HaloTracer:
                     'mcmc_id': mcmc_id,
                     'original_index': halo['original_index'],
                     'cluster_id': halo['cluster_id'],
-                    'positions': valid_positions,
-                    'masses': valid_masses,
                     'snapshots': valid_snapshots
                 }
+                
+                # Add all property histories
+                for key in property_keys:
+                    if key in property_histories:
+                        results[halo_key][key] = property_histories[key][i, valid_snaps]
         
         return results
 
@@ -114,13 +182,24 @@ def extract_target_haloes(clusters, min_cluster_size):
             mcmc_id = member['mcmc_id']
             original_index = member['original_index']
             
-            mcmc_haloes[mcmc_id].append({
+            # Build halo data dictionary with all available properties
+            halo_data = {
+                'mcmc_id': mcmc_id,
                 'original_index': original_index,
-                'cluster_id': cluster['cluster_id'],
-                'position': cluster['member_data']['positions'][i],
-                'mass': cluster['member_data']['masses'][i],
-                'progenitor_index': cluster['member_data']['progenitor_indices'][i]
-            })
+                'cluster_id': cluster['cluster_id']
+            }
+            
+            # Add all member data properties
+            for key, data in cluster['member_data'].items():
+                halo_data[key] = data[i]
+            
+            # Extract progenitor index specifically
+            if 'SOAP/ProgenitorIndex' in cluster['member_data']:
+                halo_data['progenitor_index'] = cluster['member_data']['SOAP/ProgenitorIndex'][i]
+            else:
+                halo_data['progenitor_index'] = -1
+            
+            mcmc_haloes[mcmc_id].append(halo_data)
     
     return mcmc_haloes
 
