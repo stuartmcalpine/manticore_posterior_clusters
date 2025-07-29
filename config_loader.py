@@ -26,7 +26,8 @@ class Mode2Config:
 
 @dataclass
 class Mode3Config:
-    min_members_plot: int
+    radius_inner: float
+    radius_outer: float
     figure_dpi: int
 
 @dataclass
@@ -61,7 +62,8 @@ def load_config(config_path: str = "config.toml") -> Config:
     )
     
     mode3_config = Mode3Config(
-        min_members_plot=int(data['mode3']['min_members_plot']),
+        radius_inner=float(data['mode3']['radius_inner']),
+        radius_outer=float(data['mode3']['radius_outer']),
         figure_dpi=int(data['mode3']['figure_dpi'])
     )
     

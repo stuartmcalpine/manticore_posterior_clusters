@@ -6,16 +6,17 @@ output_dir = "output"
 
 [mode1]
 mcmc_start = 0
-mcmc_end = 77
-mass_cut = 0.5e15
+mcmc_end = 79
+mass_cut = 0.8e14
 radius_cut = 300.0
-eps = 7.5
-min_samples = 5
+eps = 2.5
+min_samples = 3
 
 [mode2]
 target_snapshot = 30
-min_cluster_size = 60
+min_cluster_size = 25
 
 [mode3]
-min_members_plot = 40
+radius_inner = 350.0
+radius_outer = 500.0
 figure_dpi = 150
