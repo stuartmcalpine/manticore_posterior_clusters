@@ -42,9 +42,10 @@ class HaloTracer:
         """Load a single snapshot with validation data"""
         filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_{snap_num:04d}.hdf5")
         
-        if snap_num == 77:
-            soap_data = SOAPData(filename, mass_cut=1e15, radius_cut=300)
-            soap_data.load_groups(properties=self.to_load, only_centrals=True)
+        if snap_num >= 77:
+            raise ValueError("Should not be loading final snapshot during this phase")
+            #soap_data = SOAPData(filename, mass_cut=1e15, radius_cut=300)
+            #soap_data.load_groups(properties=self.to_load, only_centrals=True)
         else:
             soap_data = SOAPData(filename)
             soap_data.load_groups(properties=self.to_load, only_centrals=False)
