@@ -9,6 +9,7 @@ class GlobalConfig:
     basedir: str
     observer_coords: List[float]
     output_dir: str
+    boxsize: float
 
 @dataclass 
 class Mode1Config:
@@ -26,9 +27,14 @@ class Mode2Config:
 
 @dataclass
 class Mode3Config:
-    radius_inner: float
-    radius_outer: float
-    figure_dpi: int
+    basedir: str
+    mcmc_start: int
+    mcmc_end: int
+    mass_cut: float
+    radius_cut: float
+    num_samplings: int
+    eps: float
+    min_samples: int
 
 @dataclass
 class Config:
@@ -44,7 +50,8 @@ def load_config(config_path: str = "config.toml") -> Config:
     global_config = GlobalConfig(
         basedir=str(data['global']['basedir']),
         observer_coords=[float(x) for x in data['global']['observer_coords']],
-        output_dir=str(data['global']['output_dir'])
+        output_dir=str(data['global']['output_dir']),
+        boxsize=float(data['global']['boxsize'])
     )
     
     mode1_config = Mode1Config(
@@ -62,9 +69,14 @@ def load_config(config_path: str = "config.toml") -> Config:
     )
     
     mode3_config = Mode3Config(
-        radius_inner=float(data['mode3']['radius_inner']),
-        radius_outer=float(data['mode3']['radius_outer']),
-        figure_dpi=int(data['mode3']['figure_dpi'])
+        basedir=str(data['mode3']['basedir']),
+        mcmc_start=int(data['mode3']['mcmc_start']),
+        mcmc_end=int(data['mode3']['mcmc_end']),
+        mass_cut=float(data['mode3']['mass_cut']),
+        radius_cut=float(data['mode3']['radius_cut']),
+        num_samplings=int(data['mode3']['num_samplings']),
+        eps=float(data['mode3']['eps']),
+        min_samples=int(data['mode3']['min_samples'])
     )
     
     return Config(

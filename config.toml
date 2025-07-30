@@ -3,12 +3,13 @@
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/2MPP_MULTIBIN_N256_DES_V2/R1024"
 observer_coords = [500.0, 500.0, 500.0]
 output_dir = "output"
+boxsize = 1000.0
 
 [mode1]
 mcmc_start = 0
 mcmc_end = 79
 mass_cut = 0.8e14
-radius_cut = 300.0
+radius_cut = 500.0
 eps = 2.5
 min_samples = 3
 
@@ -17,6 +18,11 @@ target_snapshot = 30
 min_cluster_size = 25
 
 [mode3]
-radius_inner = 350.0
-radius_outer = 500.0
-figure_dpi = 150
+basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
+mcmc_start = 0
+mcmc_end = 2
+mass_cut = 0.8e14
+radius_cut = 300.0
+num_samplings = 26
+eps = 2.5
+min_samples = 3

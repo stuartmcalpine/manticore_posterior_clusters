@@ -145,15 +145,19 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     
     return mcmc_data
 
-def find_stable_haloes(mcmc_data, config):
+def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
     combined_data, halo_provenance = combine_haloes(mcmc_data)
     
     positions = combined_data['BoundSubhalo/CentreOfMass']
     masses = combined_data['BoundSubhalo/TotalMass']
     mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
     
+    # Use provided eps and min_samples, otherwise default to mode1 config
+    clustering_eps = eps if eps is not None else config.mode1.eps
+    clustering_min_samples = min_samples if min_samples is not None else config.mode1.min_samples
+    
     # Run standard DBSCAN
-    clustering = DBSCAN(eps=config.mode1.eps, min_samples=config.mode1.min_samples)
+    clustering = DBSCAN(eps=clustering_eps, min_samples=clustering_min_samples)
     cluster_labels = clustering.fit_predict(positions)
     
     # Enforce MCMC constraint
