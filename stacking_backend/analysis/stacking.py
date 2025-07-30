@@ -27,7 +27,7 @@ class PatchStacker:
                 # Extract patch
                 if len(coords) == 2:
                     lon_gal, lat_gal = coords
-                elif len(coords) == 4:  # (lon, lat, r200, z) format
+                elif len(coords) >= 4:  # (lon, lat, r200, z) or (lon, lat, r200, z, Ez) format
                     lon_gal, lat_gal = coords[0], coords[1]
                 else:
                     print(f"   Warning: Invalid coordinate format for patch {i}")
