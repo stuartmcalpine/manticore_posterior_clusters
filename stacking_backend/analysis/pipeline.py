@@ -2,36 +2,50 @@
 import numpy as np
 from astropy.cosmology import Planck18
 from ..data import load_pr4_data, PatchExtractor
+from ..config.paths import DataPaths
+from ..utils.validation import InputValidator
+from ..utils.statistics import StatisticsCalculator
 from .stacking import PatchStacker
 from .profiles import RadialProfileCalculator
 from .individual_clusters import IndividualClusterAnalyzer
 from .validation import NullTestValidator
+import threading
 
 class ClusterAnalysisPipeline:
     """Main analysis pipeline for cluster stacking analysis with validation"""
     
-    def __init__(self):
+    def __init__(self, data_paths=None):
+        self.data_paths = data_paths or DataPaths.get_default()
+        self._lock = threading.Lock()
         self._initialize_data()
     
     def _initialize_data(self):
-        """Load PR4 data and initialize components"""
-        data = load_pr4_data()
-        
-        self.patch_extractor = PatchExtractor(
-            y_map=data["y_map"],
-            combined_mask=data["combined_mask"],
-            nside=data["nside"]
-        )
-        
-        self.stacker = PatchStacker(self.patch_extractor)
-        self.individual_analyzer = IndividualClusterAnalyzer(self.patch_extractor)
-        self.validator = NullTestValidator(self.patch_extractor)
+        """Load PR4 data and initialize components with error handling"""
+        try:
+            data = load_pr4_data(self.data_paths)
+            
+            self.patch_extractor = PatchExtractor(
+                y_map=data["y_map"],
+                combined_mask=data["combined_mask"],
+                nside=data["nside"]
+            )
+            
+            self.stacker = PatchStacker(self.patch_extractor)
+            self.individual_analyzer = IndividualClusterAnalyzer(self.patch_extractor)
+            self.validator = NullTestValidator(self.patch_extractor)
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize analysis pipeline: {str(e)}") from e
     
     def run_individual_r200_analysis_with_validation(self, coord_list, inner_r200_factor=1.0, outer_r200_factor=3.0,
                                                    patch_size_deg=15.0, npix=256, max_patches=None,
                                                    min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
                                                    n_bootstrap=500, n_random=500):
         """Full analysis pipeline with physical scaling and validation"""
+        
+        # Input validation
+        InputValidator.validate_coord_list(coord_list)
+        InputValidator.validate_analysis_params(patch_size_deg, npix, inner_r200_factor, outer_r200_factor, min_coverage)
         
         print("🚀 CLUSTER ANALYSIS PIPELINE (Physical Scaling + Validation)")
         print("="*70)
@@ -51,17 +65,18 @@ class ClusterAnalysisPipeline:
         )
         
         if not individual_results:
-            return {'success': False, 'error': 'No valid individual measurements'}
+            raise ValueError('No valid individual measurements obtained')
         
         # Extract measurements for bootstrap
         individual_delta_y = [result['delta_y'] for result in individual_results]
         valid_coords = [result['coords'] for result in individual_results]
         
-        # Step 2: Bootstrap error estimation
+        # Step 2: Improved Bootstrap error estimation
         print(f"\n🔄 Step 2: Bootstrap error estimation ({n_bootstrap} samples)...")
-        bootstrap_results = self._bootstrap_analysis(valid_coords, individual_delta_y, 
-                                                    inner_r200_factor, outer_r200_factor,
-                                                    patch_size_deg, npix, min_coverage, n_bootstrap)
+        bootstrap_results = self._improved_bootstrap_analysis(
+            individual_results, inner_r200_factor, outer_r200_factor,
+            patch_size_deg, npix, min_coverage, n_bootstrap
+        )
         
         # Step 3: Create stacked patch
         print(f"\n📚 Step 3: Stacking patches...")
@@ -74,7 +89,7 @@ class ClusterAnalysisPipeline:
         )
         
         if stacked_patch is None:
-            return {'success': False, 'error': 'No valid patches for stacking'}
+            raise ValueError('No valid patches for stacking')
         
         # Step 4: Null tests with random pointings
         null_results = None
@@ -111,7 +126,7 @@ class ClusterAnalysisPipeline:
         return results
     
     def _convert_to_physical_coordinates(self, coord_list):
-        """Convert observer frame coordinates to physical frame with E(z) corrections"""
+        """Convert observer frame coordinates to physical frame with proper E(z) corrections"""
         physical_coords = []
         
         for coords in coord_list:
@@ -121,14 +136,14 @@ class ClusterAnalysisPipeline:
                 # Calculate E(z) = H(z)/H_0
                 Ez = Planck18.efunc(z)
                 
-                # Scale R200 to physical coordinates: θ_phys = θ_obs * D_A(z=0) / D_A(z)
-                # For small z, this is approximately θ_phys ≈ θ_obs / (1 + z)
+                # Proper angular diameter distance scaling
+                # θ_phys = θ_obs * D_A(z) / D_A(z_ref)
                 D_A_z = Planck18.angular_diameter_distance(z).value  # Mpc
-                D_A_0 = Planck18.angular_diameter_distance(0.01).value  # Reference
+                D_A_ref = Planck18.angular_diameter_distance(0.01).value  # Reference at z=0.01
                 
-                r200_physical = r200_deg * D_A_0 / D_A_z
+                # Scale R200 to reference redshift frame
+                r200_physical = r200_deg * D_A_z / D_A_ref
                 
-                # Apply E(z) correction to pressure normalization (handled in photometry)
                 physical_coords.append([lon_gal, lat_gal, r200_physical, z, Ez])
             else:
                 # No redshift information, keep as-is
@@ -136,27 +151,38 @@ class ClusterAnalysisPipeline:
         
         return physical_coords
     
-    def _bootstrap_analysis(self, valid_coords, individual_delta_y, inner_r200_factor, 
-                           outer_r200_factor, patch_size_deg, npix, min_coverage, n_bootstrap):
-        """Bootstrap resampling for robust error estimation"""
+    def _improved_bootstrap_analysis(self, individual_results, inner_r200_factor, 
+                                   outer_r200_factor, patch_size_deg, npix, min_coverage, n_bootstrap):
+        """Improved bootstrap resampling with cluster-level resampling"""
         bootstrap_means = []
-        n_clusters = len(valid_coords)
+        n_clusters = len(individual_results)
         
         for i in range(n_bootstrap):
-            # Resample with replacement
+            # Resample clusters with replacement
             bootstrap_indices = np.random.choice(n_clusters, size=n_clusters, replace=True)
-            bootstrap_measurements = [individual_delta_y[idx] for idx in bootstrap_indices]
+            bootstrap_measurements = []
+            
+            for idx in bootstrap_indices:
+                result = individual_results[idx]
+                bootstrap_measurements.append(result['delta_y'])
+            
             bootstrap_means.append(np.mean(bootstrap_measurements))
         
         bootstrap_mean = np.mean(bootstrap_means)
         bootstrap_std = np.std(bootstrap_means)
         bootstrap_error = bootstrap_std  # Standard error from bootstrap
         
+        # Calculate confidence intervals
+        bootstrap_means_sorted = np.sort(bootstrap_means)
+        ci_16 = bootstrap_means_sorted[int(0.16 * n_bootstrap)]
+        ci_84 = bootstrap_means_sorted[int(0.84 * n_bootstrap)]
+        
         return {
             'bootstrap_mean': bootstrap_mean,
             'bootstrap_std': bootstrap_std,
             'bootstrap_error': bootstrap_error,
-            'bootstrap_samples': bootstrap_means
+            'bootstrap_samples': bootstrap_means,
+            'confidence_interval_68': (ci_16, ci_84)
         }
     
     def _compile_results_with_validation(self, individual_results, individual_delta_y, bootstrap_results,
@@ -178,8 +204,9 @@ class ClusterAnalysisPipeline:
             # Compare cluster signal to null distribution
             null_significance = (mean_delta_y - null_mean) / null_std if null_std > 0 else 0
         
-        # Calculate R200 statistics
+        # Calculate R200 statistics using utility
         r200_values = [result['r200_deg'] for result in individual_results]
+        r200_stats = StatisticsCalculator.calculate_r200_statistics(r200_values)
         inner_radii = [result['inner_radius_deg'] for result in individual_results]
         outer_radii = [result['outer_radius_deg'] for result in individual_results]
         
@@ -216,8 +243,8 @@ class ClusterAnalysisPipeline:
             
             # R200 statistics
             'r200_values': r200_values,
-            'r200_median': np.median(r200_values),
-            'r200_range': (np.min(r200_values), np.max(r200_values)),
+            'r200_median': r200_stats['median'],
+            'r200_range': r200_stats['range'],
             'inner_radii_range': (np.min(inner_radii), np.max(inner_radii)),
             'outer_radii_range': (np.min(outer_radii), np.max(outer_radii)),
             
@@ -241,6 +268,10 @@ class ClusterAnalysisPipeline:
         print(f"   Mean Δy: {results['mean_delta_y']:.2e}")
         print(f"   Bootstrap error: {results['error_mean']:.2e}")
         print(f"   Detection significance: {results['significance']:.1f}σ")
+        
+        if 'confidence_interval_68' in results['bootstrap_results']:
+            ci_low, ci_high = results['bootstrap_results']['confidence_interval_68']
+            print(f"   68% CI: [{ci_low:.2e}, {ci_high:.2e}]")
         
         if results['null_results']:
             print(f"\n🎲 Null test validation:")

@@ -155,87 +155,80 @@ class SummaryPlotter:
                 ax.set_yticks([])
         
         ax.grid(True, alpha=0.3)
-    
+   
+    # stacking_backend/plotting/summary_plots.py - Modified plot_mass_range_profiles method
     @staticmethod
     def plot_mass_range_profiles(results_dict, title=None, colors=None, figsize=(12, 8)):
-        """Plot radial profiles for different mass ranges"""
+        """Plot radial profiles for different mass ranges across multiple datasets"""
         
         if not results_dict:
             print("❌ No results to plot!")
             return None, None
         
-        # Set up colors
-        if colors is None:
-            colors = ['red', 'orange', 'green', 'blue', 'purple', 'brown', 'pink', 'gray']
+        # Set up colors and styles for datasets
+        dataset_styles = {
+            'manticore': {'color': 'blue', 'linestyle': '-', 'marker': 'o'},
+            'erosita': {'color': 'red', 'linestyle': '--', 'marker': 's'},
+            'mcxc': {'color': 'green', 'linestyle': '-.', 'marker': '^'}
+        }
         
         # Create plot
         fig, ax = plt.subplots(1, 1, figsize=figsize)
         
-        # Plot each mass range
-        for i, (label, results) in enumerate(results_dict.items()):
-            if not results.get('success', False):
+        # Plot each dataset and mass range
+        for dataset_name, dataset_results in results_dict.items():
+            if dataset_name not in dataset_styles:
                 continue
+                
+            style = dataset_styles[dataset_name]
             
-            radii = results.get('profile_radii')
-            profile = results.get('profile_mean')
-            errors = results.get('profile_errors')
-            
-            if radii is None or profile is None:
-                continue
-            
-            # Filter out NaN values
-            finite_mask = np.isfinite(profile) & np.isfinite(radii)
-            if errors is not None:
-                finite_mask = finite_mask & np.isfinite(errors)
-            
-            if not np.any(finite_mask):
-                continue
-            
-            radii_plot = radii[finite_mask]
-            profile_plot = profile[finite_mask]
-            errors_plot = errors[finite_mask] if errors is not None else None
-            
-            # Get color and create label
-            color = colors[i % len(colors)]
-            n_clusters = results['n_measurements']
-            significance = results['significance']
-            
-            if 'random' in label.lower():
-                plot_label = f"{label} (N={n_clusters}, σ={significance:.1f})"
-                linestyle = '--'
-                alpha = 0.7
-            else:
-                plot_label = f"{label} M☉ (N={n_clusters}, σ={significance:.1f})"
-                linestyle = '-'
-                alpha = 1.0
-            
-            # Plot with error bars
-            if errors_plot is not None:
-                ax.errorbar(radii_plot, profile_plot, yerr=errors_plot,
-                           fmt='o-', color=color, markersize=4, linewidth=2,
-                           capsize=3, label=plot_label, linestyle=linestyle, alpha=alpha)
-            else:
-                ax.plot(radii_plot, profile_plot, 'o-', color=color,
-                       markersize=4, linewidth=2, label=plot_label,
-                       linestyle=linestyle, alpha=alpha)
+            for mass_label, results in dataset_results.items():
+                if not results.get('success', False):
+                    continue
+                
+                radii = results.get('profile_radii')
+                profile = results.get('profile_mean')
+                errors = results.get('profile_errors')
+                
+                if radii is None or profile is None:
+                    continue
+                
+                # Filter out NaN values
+                finite_mask = np.isfinite(profile) & np.isfinite(radii)
+                if errors is not None:
+                    finite_mask = finite_mask & np.isfinite(errors)
+                
+                if not np.any(finite_mask):
+                    continue
+                
+                radii_plot = radii[finite_mask]
+                profile_plot = profile[finite_mask]
+                errors_plot = errors[finite_mask] if errors is not None else None
+                
+                n_clusters = results['n_measurements']
+                significance = results['significance']
+                
+                plot_label = f"{dataset_name} {mass_label} M☉ (N={n_clusters}, σ={significance:.1f})"
+                
+                # Plot with error bars
+                if errors_plot is not None:
+                    ax.errorbar(radii_plot, profile_plot, yerr=errors_plot,
+                               fmt=style['marker']+style['linestyle'], 
+                               color=style['color'], markersize=4, linewidth=2,
+                               capsize=3, label=plot_label, alpha=0.8)
+                else:
+                    ax.plot(radii_plot, profile_plot, 
+                           style['marker']+style['linestyle'], 
+                           color=style['color'], markersize=4, linewidth=2, 
+                           label=plot_label, alpha=0.8)
         
         # Formatting
         ax.axhline(0, color='black', linestyle='-', alpha=0.3, linewidth=1)
         ax.set_xlabel('Radius [degrees]', fontsize=12)
         ax.set_ylabel('Y-parameter', fontsize=12)
-        ax.set_title(title or 'Cluster Radial Profiles by Mass Range', fontsize=14)
+        ax.set_title(title or 'Cluster Radial Profiles by Dataset and Mass Range', fontsize=14)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=10, loc='best')
-        
-        # Add summary statistics
-        n_mass_bins = len([k for k in results_dict.keys() if 'random' not in k.lower()])
-        stats_text = f'Mass bins analyzed: {n_mass_bins}'
-        if any('random' in k.lower() for k in results_dict.keys()):
-            stats_text += f'\nRandom control included'
-        
-        ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
-               verticalalignment='top', horizontalalignment='right', fontsize=9,
-               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        ax.legend(fontsize=9, loc='best', ncol=2)
         
         plt.tight_layout()
         plt.show()
