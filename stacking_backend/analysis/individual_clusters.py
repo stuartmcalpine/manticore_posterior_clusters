@@ -1,3 +1,4 @@
+# stacking_backend/analysis/individual_clusters.py
 import numpy as np
 from .photometry import AperturePhotometry
 
@@ -16,13 +17,14 @@ class IndividualClusterAnalyzer:
         individual_results = []
         rejection_stats = {
             'insufficient_coverage': 0, 'insufficient_pixels': 0,
-            'extraction_error': 0, 'invalid_format': 0
+            'extraction_error': 0, 'invalid_format': 0,
+            'y500_calculation_failed': 0
         }
         
         for i, coords in enumerate(coord_list):
             try:
-                # Extract coordinates and R200
-                lon_gal, lat_gal, r200_deg = coords[0], coords[1], coords[2]
+                # Extract coordinates and R500 (assuming r500 is provided as 3rd element)
+                lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
                 
                 # Extract patch for this cluster
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -34,12 +36,12 @@ class IndividualClusterAnalyzer:
                 if mask_patch is not None:
                     patch_data[~mask_patch] = np.nan
                 
-                # Perform aperture photometry with this cluster's R200
+                # Perform aperture photometry with this cluster's R500
                 dummy_mask = np.isfinite(patch_data)
-                result, diagnostics = AperturePhotometry.calculate_individual_r200_photometry(
+                aperture_result, aperture_diagnostics = AperturePhotometry.calculate_individual_r200_photometry(
                     patch=patch_data,
                     mask_patch=dummy_mask,
-                    r200_deg=r200_deg,
+                    r200_deg=r500_deg,  # Using R500 value
                     inner_r200_factor=inner_r200_factor,
                     outer_r200_factor=outer_r200_factor,
                     patch_size_deg=patch_size_deg,
@@ -47,14 +49,29 @@ class IndividualClusterAnalyzer:
                     min_coverage=min_coverage
                 )
                 
-                if result is not None:
-                    # Add cluster index for tracking
-                    result['cluster_index'] = i
-                    result['coords'] = coords
-                    individual_results.append(result)
+                if aperture_result is not None:
+                    # Calculate Y500 integration
+                    y500_result, y500_diagnostics = AperturePhotometry.calculate_y500_integration(
+                        patch=patch_data,
+                        r500_deg=r500_deg,
+                        patch_size_deg=patch_size_deg,
+                        npix=npix,
+                        background_subtract=True
+                    )
+                    
+                    if y500_result is not None:
+                        # Combine results
+                        combined_result = {**aperture_result, **y500_result}
+                        combined_result['cluster_index'] = i
+                        combined_result['coords'] = coords
+                        individual_results.append(combined_result)
+                    else:
+                        # Y500 calculation failed
+                        reason = y500_diagnostics.get('rejection_reason', 'y500_calculation_failed')
+                        rejection_stats[reason] = rejection_stats.get(reason, 0) + 1
                 else:
-                    # Track rejection reason
-                    reason = diagnostics.get('rejection_reason', 'unknown')
+                    # Track rejection reason from aperture photometry
+                    reason = aperture_diagnostics.get('rejection_reason', 'unknown')
                     rejection_stats[reason] = rejection_stats.get(reason, 0) + 1
                     
             except Exception as e:

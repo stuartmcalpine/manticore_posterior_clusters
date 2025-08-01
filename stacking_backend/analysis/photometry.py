@@ -1,3 +1,4 @@
+# stacking_backend/analysis/photometry.py
 import numpy as np
 
 class AperturePhotometry:
@@ -17,6 +18,68 @@ class AperturePhotometry:
         outer_mask = (radius_deg > inner_radius_deg) & (radius_deg <= outer_radius_deg)
         
         return inner_mask, outer_mask
+    
+    @staticmethod
+    def calculate_y500_integration(patch, r500_deg, patch_size_deg, npix, background_subtract=True):
+        """Calculate Y500 by integrating y-parameter within R500"""
+        
+        pixel_size_deg = patch_size_deg / npix
+        center = npix // 2
+        y, x = np.ogrid[:npix, :npix]
+        
+        radius_pixels = np.sqrt((x - center)**2 + (y - center)**2)
+        radius_deg = radius_pixels * pixel_size_deg
+        
+        # Create R500 mask
+        r500_mask = radius_deg <= r500_deg
+        
+        # Background subtraction from outer annulus if requested
+        patch_data = patch.copy()
+        if background_subtract:
+            # Use annulus from 1.5*R500 to 2.5*R500 for background
+            bg_inner = 1.5 * r500_deg
+            bg_outer = 2.5 * r500_deg
+            bg_mask = (radius_deg >= bg_inner) & (radius_deg <= bg_outer)
+            
+            if np.sum(bg_mask) > 50:  # Ensure sufficient background pixels
+                bg_level = np.nanmedian(patch_data[bg_mask])
+                patch_data -= bg_level
+        
+        # Calculate Y500 integration
+        if np.sum(r500_mask) == 0:
+            return None, {'rejection_reason': 'no_pixels_in_r500'}
+        
+        # Extract values within R500
+        y_values = patch_data[r500_mask]
+        finite_mask = np.isfinite(y_values)
+        
+        if np.sum(finite_mask) < 10:
+            return None, {'rejection_reason': 'insufficient_finite_pixels'}
+        
+        # Calculate pixel solid angle in arcmin²
+        pixel_solid_angle_deg2 = pixel_size_deg**2
+        pixel_solid_angle_arcmin2 = pixel_solid_angle_deg2 * 3600  # deg² to arcmin²
+        
+        # Sum y-values with area weighting
+        y500_raw = np.nansum(y_values[finite_mask]) * pixel_solid_angle_arcmin2
+        
+        # Calculate effective area for error estimation
+        effective_area_arcmin2 = np.sum(finite_mask) * pixel_solid_angle_arcmin2
+        
+        result = {
+            'y500': y500_raw,
+            'effective_area_arcmin2': effective_area_arcmin2,
+            'n_pixels': np.sum(finite_mask),
+            'r500_deg': r500_deg,
+            'background_subtracted': background_subtract
+        }
+        
+        diagnostics = {
+            'rejection_reason': None,
+            'bg_pixels': np.sum((radius_deg >= 1.5*r500_deg) & (radius_deg <= 2.5*r500_deg)) if background_subtract else 0
+        }
+        
+        return result, diagnostics
     
     @staticmethod
     def calculate_aperture_photometry(patch, mask_patch, inner_radius_deg, outer_radius_deg,
