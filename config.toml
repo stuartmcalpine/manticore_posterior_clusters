@@ -10,8 +10,8 @@ mcmc_start = 0
 mcmc_end = 79
 mass_cut = 0.8e14
 radius_cut = 500.0
-eps = 2.5
-min_samples = 3
+eps = 3.0
+min_samples = 5
 
 [mode2]
 target_snapshot = 30
@@ -20,9 +20,9 @@ min_cluster_size = 25
 [mode3]
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
 mcmc_start = 0
-mcmc_end = 2
+mcmc_end = 9
 mass_cut = 0.8e14
-radius_cut = 300.0
-num_samplings = 26
-eps = 2.5
-min_samples = 3
+radius_cut = 500.0
+num_samplings = 8
+eps = 3.0
+min_samples = 5

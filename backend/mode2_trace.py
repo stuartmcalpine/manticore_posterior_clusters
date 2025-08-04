@@ -235,7 +235,11 @@ def run_mode2(config_path="config.toml", output_dir="output"):
     
     if rank == 0:
         print("Loading clusters from Mode 1...")
-        clusters, cluster_metadata = load_clusters_from_hdf5(output_dir)
+        # Convert eps to filename format (2.5 -> "2p5")
+        eps_str = str(config.mode1.eps).replace('.', 'p')
+        filename = f"clusters_eps_{eps_str}_min_samples_{config.mode1.min_samples}.h5"
+
+        clusters, cluster_metadata = load_clusters_from_hdf5(output_dir, filename=filename, minimal=False)
         print(f"Loaded {len(clusters)} clusters")
         
         print(f"Extracting haloes from clusters with >= {config.mode2.min_cluster_size} members...")

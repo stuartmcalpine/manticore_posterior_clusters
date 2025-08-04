@@ -53,7 +53,7 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
             member_grp.create_dataset('mcmc_ids', data=mcmc_ids)
             member_grp.create_dataset('original_indices', data=orig_indices)
 
-def load_clusters_from_hdf5(output_dir, filename="clusters.h5"):
+def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True):
     filepath = os.path.join(output_dir, filename)
     
     clusters = []
@@ -85,6 +85,9 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5"):
                 if key not in ['mcmc_ids', 'original_indices']:
                     # Convert back to original property name format
                     original_key = key.replace('_', '/')
+
+                    if minimal and original_key not in ["BoundSubhalo/CentreOfMass", "BoundSubhalo/TotalMass"]:
+                        continue
                     member_data[original_key] = member_grp[key][:]
             
             cluster = {
