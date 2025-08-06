@@ -46,7 +46,9 @@ def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering
         analyze_mass_distribution_in_clusters(sorted_haloes)
     
     print("Saving clusters to HDF5...")
-    save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, cluster_labels, config, output_dir)
+    fname = f"clusters_eps_{str(config.mode1.eps).replace('.','p')}_min_samples_{config.mode1.min_samples}.h5"
+    save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, cluster_labels, config, output_dir,
+            filename=fname)
     print("Mode 1 complete!")
 
 if __name__ == '__main__':

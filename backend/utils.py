@@ -53,7 +53,8 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
             member_grp.create_dataset('mcmc_ids', data=mcmc_ids)
             member_grp.create_dataset('original_indices', data=orig_indices)
 
-def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True):
+def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
+        min_mass=1e14):
     filepath = os.path.join(output_dir, filename)
     
     clusters = []
@@ -100,7 +101,9 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True):
                 'members': members,
                 'member_data': member_data
             }
-            clusters.append(cluster)
+
+            if cluster["mean_mass"] >= min_mass:
+                clusters.append(cluster)
     
     return clusters, metadata
 
@@ -210,3 +213,104 @@ def load_single_cluster_traces(cluster_id, output_dir, filename="halo_traces.h5"
         return cluster_traces if cluster_traces else None
     except FileNotFoundError:
         return None
+
+def find_clusters_in_window(output_dir, filename, center_position, window_size):
+   """
+   Find clusters whose centroids are within a given window without loading full data.
+
+   Parameters:
+   -----------
+   output_dir : str
+       Directory containing the HDF5 file
+   filename : str
+       HDF5 filename
+   center_position : array-like
+       [x, y, z] center position
+   window_size : float
+       Radius of window in Mpc
+
+   Returns:
+   --------
+   list : Cluster IDs within the window
+   """
+   filepath = os.path.join(output_dir, filename)
+   window_cluster_ids = []
+
+   try:
+       with h5py.File(filepath, 'r') as f:
+           clusters_grp = f['clusters']
+
+           for cluster_name in clusters_grp.keys():
+               cluster_grp = clusters_grp[cluster_name]
+               centroid = cluster_grp.attrs['mean_position']
+
+               # Check if centroid is within window
+               distance = np.linalg.norm(centroid - center_position)
+               if distance <= window_size:
+                   cluster_id = int(cluster_grp.attrs['cluster_id'])
+                   window_cluster_ids.append(cluster_id)
+
+   except FileNotFoundError:
+       return []
+   except Exception as e:
+       print(f"Error reading {filepath}: {e}")
+       return []
+
+   return window_cluster_ids
+
+def load_single_cluster_members(output_dir, filename, cluster_id):
+   """
+   Load member data for a single cluster by cluster ID.
+
+   Parameters:
+   -----------
+   output_dir : str
+       Directory containing the HDF5 file
+   filename : str
+       HDF5 filename
+   cluster_id : int
+       Cluster ID to load
+
+   Returns:
+   --------
+   dict : Cluster data including member_data, or None if not found
+   """
+   filepath = os.path.join(output_dir, filename)
+
+   try:
+       with h5py.File(filepath, 'r') as f:
+           clusters_grp = f['clusters']
+           cluster_grp_name = f'cluster_{cluster_id}'
+
+           if cluster_grp_name not in clusters_grp:
+               return None
+
+           cluster_grp = clusters_grp[cluster_grp_name]
+           member_grp = cluster_grp['members']
+
+           # Load cluster metadata
+           cluster_data = {
+               'cluster_id': int(cluster_grp.attrs['cluster_id']),
+               'cluster_size': int(cluster_grp.attrs['cluster_size']),
+               'mean_position': cluster_grp.attrs['mean_position'],
+               'mean_mass': float(cluster_grp.attrs['mean_mass']),
+               'position_std': cluster_grp.attrs['position_std'],
+               'mass_std': float(cluster_grp.attrs['mass_std'])
+           }
+
+           # Load member data
+           member_data = {}
+           for key in member_grp.keys():
+               if key not in ['mcmc_ids', 'original_indices']:
+                   original_key = key.replace('_', '/')
+                   member_data[original_key] = member_grp[key][:]
+
+           cluster_data['member_data'] = member_data
+
+           return cluster_data
+
+   except FileNotFoundError:
+       return None
+   except Exception as e:
+       print(f"Error loading cluster {cluster_id} from {filepath}: {e}")
+       return None

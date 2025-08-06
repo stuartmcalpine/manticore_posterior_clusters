@@ -300,7 +300,9 @@ def run_mode2(config_path="config.toml", output_dir="output"):
         
         print(f"Combined {len(combined_halo_traces)} halo traces from all ranks")
         print("Saving halo traces to HDF5...")
-        save_halo_traces_to_hdf5(combined_halo_traces, config, metadata_to_broadcast['cluster_metadata'], output_dir)
+        fname = f"halo_traces_eps_{str(config.mode1.eps).replace('.','p')}_min_samples_{config.mode1.min_samples}.h5"
+        save_halo_traces_to_hdf5(combined_halo_traces, config, metadata_to_broadcast['cluster_metadata'], output_dir,
+                filename=fname)
         print("Mode 2 complete!")
 
 if __name__ == '__main__':
