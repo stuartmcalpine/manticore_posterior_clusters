@@ -158,7 +158,8 @@ class SummaryPlotter:
    
     # stacking_backend/plotting/summary_plots.py - Modified plot_mass_range_profiles method
     @staticmethod
-    def plot_mass_range_profiles(results_dict, title=None, colors=None, figsize=(12, 8)):
+    def plot_mass_range_profiles(results_dict, title=None, colors=None, figsize=(12, 8),
+            ax=None):
         """Plot radial profiles for different mass ranges across multiple datasets"""
         
         if not results_dict:
@@ -172,9 +173,12 @@ class SummaryPlotter:
             'mcxc': {'color': 'green', 'linestyle': '-.', 'marker': '^'}
         }
         
-        # Create plot
-        fig, ax = plt.subplots(1, 1, figsize=figsize)
-        
+        # Create plot only if ax not provided
+        if ax is None:
+            fig, ax = plt.subplots(1, 1, figsize=figsize)
+        else:
+            fig = ax.figure
+
         # Plot each dataset and mass range
         for dataset_name, dataset_results in results_dict.items():
             if dataset_name not in dataset_styles:
@@ -229,8 +233,11 @@ class SummaryPlotter:
         ax.set_title(title or 'Cluster Radial Profiles by Dataset and Mass Range', fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=9, loc='best', ncol=2)
-        
-        plt.tight_layout()
-        plt.show()
-        
-        return fig, ax
+       
+        # Only show and return fig if we created it
+        if ax is None:
+            plt.tight_layout()
+            plt.show()
+            return fig, ax
+        else:
+            return None, ax
