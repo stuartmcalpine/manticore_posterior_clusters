@@ -7,7 +7,7 @@ from collections import defaultdict
 def ensure_output_dir(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
-def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, cluster_labels, config, output_dir, filename="clusters.h5"):
+def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance, cluster_labels, config, output_dir, filename="clusters.h5"):
     filepath = os.path.join(output_dir, filename)
     
     with h5py.File(filepath, 'w') as f:
@@ -16,14 +16,14 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
         meta_grp.attrs['mcmc_end'] = config.mode1.mcmc_end
         meta_grp.attrs['eps'] = config.mode1.eps
         meta_grp.attrs['min_samples'] = config.mode1.min_samples
-        meta_grp.attrs['mass_cut'] = config.mode1.mass_cut
+        meta_grp.attrs['m200_mass_cut'] = config.mode1.m200_mass_cut
         meta_grp.attrs['radius_cut'] = config.mode1.radius_cut
         meta_grp.attrs['basedir'] = config.global_config.basedir
         meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
         
         all_data_grp = f.create_group('all_haloes')
         all_data_grp.create_dataset('positions', data=positions)
-        all_data_grp.create_dataset('masses', data=masses)
+        all_data_grp.create_dataset('m200_masses', data=m200_masses)
         all_data_grp.create_dataset('cluster_labels', data=cluster_labels)
         
         prov_grp = all_data_grp.create_group('provenance')
@@ -38,10 +38,16 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
             cluster_grp.attrs['cluster_id'] = cluster['cluster_id']
             cluster_grp.attrs['cluster_size'] = cluster['cluster_size']
             cluster_grp.attrs['mean_position'] = cluster['mean_position']
-            cluster_grp.attrs['mean_mass'] = cluster['mean_mass']
+            cluster_grp.attrs['mean_m200_mass'] = cluster['mean_m200_mass']
+            cluster_grp.attrs['mean_subhalo_mass'] = cluster.get('mean_subhalo_mass', np.nan)
+            cluster_grp.attrs['mean_m500'] = cluster.get('mean_m500', np.nan)
             cluster_grp.attrs['position_std'] = cluster['position_std']
-            cluster_grp.attrs['mass_std'] = cluster['mass_std']
-            
+            cluster_grp.attrs['m200_mass_std'] = cluster['m200_mass_std']
+            cluster_grp.attrs['subhalo_mass_std'] = cluster.get('subhalo_mass_std', np.nan)
+            cluster_grp.attrs['m500_std'] = cluster.get('m500_std', np.nan)
+            cluster_grp.attrs['log10_m200_mass_std'] = cluster['log10_m200_mass_std']
+            cluster_grp.attrs['log10_m500_std'] = cluster['log10_m500_std']
+
             member_grp = cluster_grp.create_group('members')
             
             # Save all member data properties
@@ -54,7 +60,7 @@ def save_clusters_to_hdf5(stable_haloes, positions, masses, halo_provenance, clu
             member_grp.create_dataset('original_indices', data=orig_indices)
 
 def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
-        min_mass=1e14):
+        min_m200_mass=1e14):
     filepath = os.path.join(output_dir, filename)
     
     clusters = []
@@ -68,6 +74,11 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
         clusters_grp = f['clusters']
         for cluster_name in clusters_grp.keys():
             cluster_grp = clusters_grp[cluster_name]
+            
+            # Check M200 mass filter first before loading any member data
+            mean_m200_mass = float(cluster_grp.attrs['mean_m200_mass'])
+            if mean_m200_mass < min_m200_mass:
+                continue
             
             member_grp = cluster_grp['members']
             mcmc_ids = member_grp['mcmc_ids'][:]
@@ -87,7 +98,7 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
                     # Convert back to original property name format
                     original_key = key.replace('_', '/')
 
-                    if minimal and original_key not in ["BoundSubhalo/CentreOfMass", "BoundSubhalo/TotalMass"]:
+                    if minimal and original_key not in ["SO/200_crit/CentreOfMass", "SO/200_crit/TotalMass"]:
                         continue
                     member_data[original_key] = member_grp[key][:]
             
@@ -95,15 +106,20 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
                 'cluster_id': int(cluster_grp.attrs['cluster_id']),
                 'cluster_size': int(cluster_grp.attrs['cluster_size']),
                 'mean_position': cluster_grp.attrs['mean_position'],
-                'mean_mass': float(cluster_grp.attrs['mean_mass']),
+                'mean_m200_mass': mean_m200_mass,
+                'mean_subhalo_mass': float(cluster_grp.attrs.get('mean_subhalo_mass', np.nan)),
+                'mean_m500': float(cluster_grp.attrs.get('mean_m500', np.nan)),
                 'position_std': cluster_grp.attrs['position_std'],
-                'mass_std': float(cluster_grp.attrs['mass_std']),
+                'm200_mass_std': float(cluster_grp.attrs['m200_mass_std']),
+                'log10_m200_mass_std': float(cluster_grp.attrs['log10_m200_mass_std']),
+                'log10_m500_std': float(cluster_grp.attrs['log10_m500_std']),
+                'subhalo_mass_std': float(cluster_grp.attrs.get('subhalo_mass_std', np.nan)),
+                'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
                 'members': members,
                 'member_data': member_data
             }
-
-            if cluster["mean_mass"] >= min_mass:
-                clusters.append(cluster)
+            
+            clusters.append(cluster)
     
     return clusters, metadata
 
@@ -293,9 +309,15 @@ def load_single_cluster_members(output_dir, filename, cluster_id):
                'cluster_id': int(cluster_grp.attrs['cluster_id']),
                'cluster_size': int(cluster_grp.attrs['cluster_size']),
                'mean_position': cluster_grp.attrs['mean_position'],
-               'mean_mass': float(cluster_grp.attrs['mean_mass']),
+               'mean_m200_mass': float(cluster_grp.attrs['mean_m200_mass']),
+               'mean_subhalo_mass': float(cluster_grp.attrs.get('mean_subhalo_mass', np.nan)),
+               'mean_m500': float(cluster_grp.attrs.get('mean_m500', np.nan)),
                'position_std': cluster_grp.attrs['position_std'],
-               'mass_std': float(cluster_grp.attrs['mass_std'])
+               'm200_mass_std': float(cluster_grp.attrs['m200_mass_std']),
+               'subhalo_mass_std': float(cluster_grp.attrs.get('subhalo_mass_std', np.nan)),
+               'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
+               'log10_m200_std': float(cluster_grp.attrs.get('log10_m200_std', np.nan)),
+               'log10_m500_std': float(cluster_grp.attrs.get('log10_m500_std', np.nan)),
            }
 
            # Load member data

@@ -41,7 +41,7 @@ def enforce_mcmc_constraint(cluster_labels, positions, mcmc_ids):
     
     return cluster_labels
 
-def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, mcmc_ids, 
+def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, m200_masses, mcmc_ids, 
                                             mass_outlier_threshold=0.3, use_mass_distance=False):
     """
     Post-process clusters to ensure at most one halo per MCMC per cluster,
@@ -53,8 +53,8 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, 
         Cluster assignments from DBSCAN
     positions : array
         Halo positions
-    masses : array
-        Halo masses (linear units)
+    m200_masses : array
+        Halo M200 masses (linear units)
     mcmc_ids : array
         MCMC sample IDs
     mass_outlier_threshold : float
@@ -65,7 +65,7 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, 
     unique_clusters = np.unique(cluster_labels)
     
     # Work in log-mass space
-    log_masses = np.log10(masses)
+    log_m200_masses = np.log10(m200_masses)
     
     for cluster_id in unique_clusters:
         if cluster_id == -1:  # Skip noise
@@ -73,26 +73,26 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, 
             
         cluster_mask = cluster_labels == cluster_id
         cluster_positions = positions[cluster_mask]
-        cluster_log_masses = log_masses[cluster_mask]
+        cluster_log_m200_masses = log_m200_masses[cluster_mask]
         cluster_mcmc_ids = mcmc_ids[cluster_mask]
         cluster_indices = np.where(cluster_mask)[0]
         
         # Calculate cluster statistics in log-mass space
         cluster_center = np.mean(cluster_positions, axis=0)
-        cluster_mean_log_mass = np.mean(cluster_log_masses)
-        cluster_log_mass_std = np.std(cluster_log_masses)
+        cluster_mean_log_m200_mass = np.mean(cluster_log_m200_masses)
+        cluster_log_m200_mass_std = np.std(cluster_log_m200_masses)
         
         # Identify mass outliers within the cluster (in log space)
-        if cluster_log_mass_std > 0:
-            log_mass_z_scores = np.abs((cluster_log_masses - cluster_mean_log_mass) / cluster_log_mass_std)
+        if cluster_log_m200_mass_std > 0:
+            log_m200_mass_z_scores = np.abs((cluster_log_m200_masses - cluster_mean_log_m200_mass) / cluster_log_m200_mass_std)
             # Convert threshold to standard deviations if needed
             if mass_outlier_threshold < 1.0:
                 # Interpret as direct log-mass difference threshold
-                log_mass_deviations = np.abs(cluster_log_masses - cluster_mean_log_mass)
-                mass_outliers = log_mass_deviations > mass_outlier_threshold
+                log_m200_mass_deviations = np.abs(cluster_log_m200_masses - cluster_mean_log_m200_mass)
+                mass_outliers = log_m200_mass_deviations > mass_outlier_threshold
             else:
                 # Interpret as number of standard deviations
-                mass_outliers = log_mass_z_scores > mass_outlier_threshold
+                mass_outliers = log_m200_mass_z_scores > mass_outlier_threshold
             
             # Mark mass outliers as noise
             outlier_indices = cluster_indices[mass_outliers]
@@ -102,14 +102,14 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, 
             # Update masks after removing outliers
             cluster_mask = cluster_labels == cluster_id
             cluster_positions = positions[cluster_mask]
-            cluster_log_masses = log_masses[cluster_mask]
+            cluster_log_m200_masses = log_m200_masses[cluster_mask]
             cluster_mcmc_ids = mcmc_ids[cluster_mask]
             cluster_indices = np.where(cluster_mask)[0]
             
             # Recalculate cluster center after filtering
             if len(cluster_positions) > 0:
                 cluster_center = np.mean(cluster_positions, axis=0)
-                cluster_mean_log_mass = np.mean(cluster_log_masses)
+                cluster_mean_log_m200_mass = np.mean(cluster_log_m200_masses)
         
         # Group by MCMC ID (after mass filtering)
         unique_mcmc_ids = np.unique(cluster_mcmc_ids)
@@ -121,18 +121,18 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, masses, 
             if len(mcmc_indices_in_cluster) > 1:
                 # Multiple halos from same MCMC in this cluster
                 mcmc_positions = cluster_positions[mcmc_mask]
-                mcmc_log_masses = cluster_log_masses[mcmc_mask]
+                mcmc_log_m200_masses = cluster_log_m200_masses[mcmc_mask]
                 
                 if use_mass_distance:
                     # Use combined position + log-mass distance
                     pos_distances = np.linalg.norm(mcmc_positions - cluster_center, axis=1)
-                    log_mass_distances = np.abs(mcmc_log_masses - cluster_mean_log_mass)
+                    log_m200_mass_distances = np.abs(mcmc_log_m200_masses - cluster_mean_log_m200_mass)
                     
                     # Normalize both distances and combine
                     pos_distances_norm = pos_distances / np.max(pos_distances) if np.max(pos_distances) > 0 else pos_distances
-                    log_mass_distances_norm = log_mass_distances / np.max(log_mass_distances) if np.max(log_mass_distances) > 0 else log_mass_distances
+                    log_m200_mass_distances_norm = log_m200_mass_distances / np.max(log_m200_mass_distances) if np.max(log_m200_mass_distances) > 0 else log_m200_mass_distances
                     
-                    combined_distances = pos_distances_norm + log_mass_distances_norm
+                    combined_distances = pos_distances_norm + log_m200_mass_distances_norm
                     closest_idx = np.argmin(combined_distances)
                 else:
                     # Use only position distance (original method)
@@ -159,7 +159,7 @@ def combine_haloes(mcmc_data):
         combined_data[key] = []
     
     for mcmc_id, data in mcmc_data.items():
-        n_haloes = len(data['BoundSubhalo/TotalMass'])
+        n_haloes = len(data['SO/200_crit/TotalMass'])
         
         # Combine all properties
         for key in property_keys:
@@ -222,38 +222,43 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     
     for mcmc_id in range(config.mode1.mcmc_start, config.mode1.mcmc_end + 1):
         filename = os.path.join(config.global_config.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
-        soap_data = SOAPData(filename, mass_cut=config.mode1.mass_cut, radius_cut=initial_radius_cut)
+        soap_data = SOAPData(filename, radius_cut=initial_radius_cut)
         soap_data.load_groups(properties=to_load, only_centrals=True)
         soap_data.set_observer(config.global_config.observer_coords, skip_redshift=True)
        
         # Don't want to keep redshift
         del soap_data.data["redshift"]
 
+        # Apply M200 mass cut
+        m200_masses = soap_data.data['SO/200_crit/TotalMass']
+        m200_mass_mask = m200_masses >= config.mode1.m200_mass_cut
+        
         # Apply radius filtering if both inner and outer are specified
         if radius_inner is not None and radius_outer is not None:
             distances = soap_data.data['dist']
             radius_mask = (distances >= radius_inner) & (distances <= radius_outer)
-            
-            filtered_data = {}
-            for key, value in soap_data.data.items():
-                if isinstance(value, np.ndarray) and len(value) == len(distances):
-                    filtered_data[key] = value[radius_mask]
-                else:
-                    filtered_data[key] = value
-            
-            mcmc_data[mcmc_id] = filtered_data
+            combined_mask = m200_mass_mask & radius_mask
         else:
-            mcmc_data[mcmc_id] = soap_data.data.copy()
+            combined_mask = m200_mass_mask
         
-        print(f"Loaded MCMC step {mcmc_id}: {len(mcmc_data[mcmc_id]['BoundSubhalo/TotalMass'])} haloes")
+        filtered_data = {}
+        for key, value in soap_data.data.items():
+            if isinstance(value, np.ndarray) and len(value) == len(m200_masses):
+                filtered_data[key] = value[combined_mask]
+            else:
+                filtered_data[key] = value
+        
+        mcmc_data[mcmc_id] = filtered_data
+        
+        print(f"Loaded MCMC step {mcmc_id}: {len(mcmc_data[mcmc_id]['SO/200_crit/TotalMass'])} haloes")
     
     return mcmc_data
 
 def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
     combined_data, halo_provenance = combine_haloes(mcmc_data)
     
-    positions = combined_data['BoundSubhalo/CentreOfMass']
-    masses = combined_data['BoundSubhalo/TotalMass']
+    positions = combined_data['SO/200_crit/CentreOfMass']
+    m200_masses = combined_data['SO/200_crit/TotalMass']
     mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
     
     # Use provided eps and min_samples, otherwise default to mode1 config
@@ -275,15 +280,30 @@ def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
             
         cluster_mask = cluster_labels == cluster_id
         cluster_positions = positions[cluster_mask]
-        cluster_masses = masses[cluster_mask]
+        cluster_m200_masses = m200_masses[cluster_mask]
         cluster_provenance = [halo_provenance[i] for i in range(len(halo_provenance)) if cluster_mask[i]]
         
         cluster_size = len(cluster_positions)
         mean_position = np.mean(cluster_positions, axis=0)
-        mean_mass = np.mean(cluster_masses)
+        mean_m200_mass = np.mean(cluster_m200_masses)
         position_std = np.std(cluster_positions, axis=0)
-        mass_std = np.std(cluster_masses)
+        m200_mass_std = np.std(cluster_m200_masses)
+        log10_m200_mass_std = np.std(np.log10(cluster_m200_masses))
+
+        # Calculate mean subhalo mass and M500
+        cluster_subhalo_masses = combined_data['BoundSubhalo/TotalMass'][cluster_mask]
+        cluster_m500 = combined_data['SO/500_crit/TotalMass'][cluster_mask]
         
+        # Handle NaN values
+        valid_subhalo_masses = cluster_subhalo_masses[~np.isnan(cluster_subhalo_masses)]
+        valid_m500 = cluster_m500[~np.isnan(cluster_m500)]
+        
+        mean_subhalo_mass = np.mean(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
+        mean_m500 = np.mean(valid_m500) if len(valid_m500) > 0 else np.nan
+        subhalo_mass_std = np.std(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
+        m500_std = np.std(valid_m500) if len(valid_m500) > 0 else np.nan
+        log10_m500_std = np.std(np.log10(valid_m500)) if len(valid_m500) > 0 else np.nan
+
         # Extract all member data for this cluster
         member_data = {}
         for key, data in combined_data.items():
@@ -293,14 +313,20 @@ def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
             'cluster_id': cluster_id,
             'cluster_size': cluster_size,
             'mean_position': mean_position,
-            'mean_mass': mean_mass,
+            'mean_m200_mass': mean_m200_mass,
+            'mean_subhalo_mass': mean_subhalo_mass,
+            'mean_m500': mean_m500,
             'position_std': position_std,
-            'mass_std': mass_std,
+            'm200_mass_std': m200_mass_std,
+            'subhalo_mass_std': subhalo_mass_std,
+            'm500_std': m500_std,
             'members': cluster_provenance,
-            'member_data': member_data
+            'member_data': member_data,
+            'log10_m200_mass_std': log10_m200_mass_std,
+            'log10_m500_std': log10_m500_std,
         })
     
-    return stable_haloes, positions, masses, halo_provenance, cluster_labels
+    return stable_haloes, positions, m200_masses, halo_provenance, cluster_labels
 
 def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samples=None, 
                                           mass_outlier_threshold=0.3, use_mass_distance=False,
@@ -322,9 +348,9 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
     """
     combined_data, halo_provenance = combine_haloes(mcmc_data)
     
-    positions = combined_data['BoundSubhalo/CentreOfMass']
-    masses = combined_data['BoundSubhalo/TotalMass']
-    log_masses = np.log10(masses)  # Work in log-mass space
+    positions = combined_data['SO/200_crit/CentreOfMass']
+    m200_masses = combined_data['SO/200_crit/TotalMass']
+    log_m200_masses = np.log10(m200_masses)  # Work in log-mass space
     mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
     
     # Use provided eps and min_samples, otherwise default to mode1 config
@@ -334,9 +360,9 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
     # Optional: Weight positions by mass for clustering
     if mass_weighted_clustering:
         # Create mass weights from log-masses
-        log_mass_weights = (log_masses - np.min(log_masses)) + 1  # Ensure positive weights
-        mass_weights = log_mass_weights ** mass_weight_power
-        weighted_positions = positions * mass_weights.reshape(-1, 1)
+        log_m200_mass_weights = (log_m200_masses - np.min(log_m200_masses)) + 1  # Ensure positive weights
+        m200_mass_weights = log_m200_mass_weights ** mass_weight_power
+        weighted_positions = positions * m200_mass_weights.reshape(-1, 1)
         clustering_input = weighted_positions
     else:
         clustering_input = positions
@@ -347,7 +373,7 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
     
     # Enforce MCMC constraint with mass filtering
     cluster_labels = enforce_mcmc_constraint_with_mass_filter(
-        cluster_labels, positions, masses, mcmc_ids, 
+        cluster_labels, positions, m200_masses, mcmc_ids, 
         mass_outlier_threshold, use_mass_distance
     )
     
@@ -359,23 +385,38 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
             
         cluster_mask = cluster_labels == cluster_id
         cluster_positions = positions[cluster_mask]
-        cluster_masses = masses[cluster_mask]
-        cluster_log_masses = log_masses[cluster_mask]
+        cluster_m200_masses = m200_masses[cluster_mask]
+        cluster_log_m200_masses = log_m200_masses[cluster_mask]
         cluster_provenance = [halo_provenance[i] for i in range(len(halo_provenance)) if cluster_mask[i]]
         
         cluster_size = len(cluster_positions)
         mean_position = np.mean(cluster_positions, axis=0)
-        mean_mass = np.mean(cluster_masses)
-        mean_log_mass = np.mean(cluster_log_masses)
+        mean_m200_mass = np.mean(cluster_m200_masses)
+        mean_log_m200_mass = np.mean(cluster_log_m200_masses)
         position_std = np.std(cluster_positions, axis=0)
-        mass_std = np.std(cluster_masses)
-        log_mass_std = np.std(cluster_log_masses)
+        m200_mass_std = np.std(cluster_m200_masses)
+        log10_m200_mass_std = np.std(np.log10(cluster_m200_masses))
+        log_m200_mass_std = np.std(cluster_log_m200_masses)
         
+        # Calculate mean subhalo mass and M500
+        cluster_subhalo_masses = combined_data['BoundSubhalo/TotalMass'][cluster_mask]
+        cluster_m500 = combined_data['SO/500_crit/TotalMass'][cluster_mask]
+        
+        # Handle NaN values
+        valid_subhalo_masses = cluster_subhalo_masses[~np.isnan(cluster_subhalo_masses)]
+        valid_m500 = cluster_m500[~np.isnan(cluster_m500)]
+        
+        mean_subhalo_mass = np.mean(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
+        mean_m500 = np.mean(valid_m500) if len(valid_m500) > 0 else np.nan
+        subhalo_mass_std = np.std(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
+        m500_std = np.std(valid_m500) if len(valid_m500) > 0 else np.nan
+        log10_m500_std = np.std(np.log10(valid_m500)) if len(valid_m500) > 0 else np.nan
+
         # Mass statistics in both linear and log space
-        mass_cv = mass_std / mean_mass if mean_mass > 0 else 0  # Coefficient of variation
-        mass_range = np.max(cluster_masses) - np.min(cluster_masses)
-        log_mass_range = np.max(cluster_log_masses) - np.min(cluster_log_masses)
-        mass_ratio_range = 10**log_mass_range  # Mass ratio between min and max
+        m200_mass_cv = m200_mass_std / mean_m200_mass if mean_m200_mass > 0 else 0  # Coefficient of variation
+        m200_mass_range = np.max(cluster_m200_masses) - np.min(cluster_m200_masses)
+        log_m200_mass_range = np.max(cluster_log_m200_masses) - np.min(cluster_log_m200_masses)
+        m200_mass_ratio_range = 10**log_m200_mass_range  # Mass ratio between min and max
         
         # Extract all member data for this cluster
         member_data = {}
@@ -386,61 +427,67 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
             'cluster_id': cluster_id,
             'cluster_size': cluster_size,
             'mean_position': mean_position,
-            'mean_mass': mean_mass,
-            'mean_log_mass': mean_log_mass,
+            'mean_m200_mass': mean_m200_mass,
+            'mean_subhalo_mass': mean_subhalo_mass,
+            'mean_m500': mean_m500,
+            'mean_log_m200_mass': mean_log_m200_mass,
             'position_std': position_std,
-            'mass_std': mass_std,
-            'log_mass_std': log_mass_std,
-            'mass_cv': mass_cv,
-            'mass_range': mass_range,
-            'log_mass_range': log_mass_range,
-            'mass_ratio_range': mass_ratio_range,
+            'm200_mass_std': m200_mass_std,
+            'subhalo_mass_std': subhalo_mass_std,
+            'm500_std': m500_std,
+            'log_m200_mass_std': log_m200_mass_std,
+            'm200_mass_cv': m200_mass_cv,
+            'm200_mass_range': m200_mass_range,
+            'log_m200_mass_range': log_m200_mass_range,
+            'm200_mass_ratio_range': m200_mass_ratio_range,
             'members': cluster_provenance,
-            'member_data': member_data
+            'member_data': member_data,
+            'log10_m200_mass_std': log10_m200_mass_std,
+            'log10_m500_std': log10_m500_std,
         })
     
-    return stable_haloes, positions, masses, halo_provenance, cluster_labels
+    return stable_haloes, positions, m200_masses, halo_provenance, cluster_labels
 
 def analyze_mass_distribution_in_clusters(stable_haloes):
     """
     Analyze mass distributions within clusters to help tune mass filtering parameters.
     Now works in log-mass space which is more appropriate for halo masses.
     """
-    print("\nMass distribution analysis (log-mass space):")
+    print("\nM200 mass distribution analysis (log-mass space):")
     print("="*60)
     
     for i, cluster in enumerate(stable_haloes[:5]):  # Top 5 clusters
-        masses = cluster['member_data']['BoundSubhalo/TotalMass']
-        log_masses = np.log10(masses)
+        m200_masses = cluster['member_data']['SO/200_crit/TotalMass']
+        log_m200_masses = np.log10(m200_masses)
         
         print(f"\nCluster {cluster['cluster_id']} (size={cluster['cluster_size']}):")
-        print(f"  Mass range: {np.min(masses):.2e} - {np.max(masses):.2e} M☉")
-        print(f"  Log-mass range: {np.min(log_masses):.2f} - {np.max(log_masses):.2f}")
-        print(f"  Mass ratio (max/min): {np.max(masses)/np.min(masses):.1f}x")
-        print(f"  Log-mass mean ± std: {np.mean(log_masses):.2f} ± {np.std(log_masses):.2f}")
-        print(f"  Log-mass spread: {cluster['log_mass_range']:.2f} dex")
+        print(f"  M200 range: {np.min(m200_masses):.2e} - {np.max(m200_masses):.2e} M☉")
+        print(f"  Log-M200 range: {np.min(log_m200_masses):.2f} - {np.max(log_m200_masses):.2f}")
+        print(f"  M200 ratio (max/min): {np.max(m200_masses)/np.min(m200_masses):.1f}x")
+        print(f"  Log-M200 mean ± std: {np.mean(log_m200_masses):.2f} ± {np.std(log_m200_masses):.2f}")
+        print(f"  Log-M200 spread: {cluster['log_m200_mass_range']:.2f} dex")
         
         # Show which masses would be flagged as outliers at different thresholds
-        mean_log_mass = np.mean(log_masses)
-        log_mass_std = np.std(log_masses)
+        mean_log_m200_mass = np.mean(log_m200_masses)
+        log_m200_mass_std = np.std(log_m200_masses)
         
-        if log_mass_std > 0:
+        if log_m200_mass_std > 0:
             # Standard deviation based outliers
-            z_scores = np.abs((log_masses - mean_log_mass) / log_mass_std)
+            z_scores = np.abs((log_m200_masses - mean_log_m200_mass) / log_m200_mass_std)
             outliers_2sigma = np.sum(z_scores > 2.0)
             outliers_3sigma = np.sum(z_scores > 3.0)
-            print(f"  Potential outliers (2σ in log-mass): {outliers_2sigma}/{len(masses)}")
-            print(f"  Potential outliers (3σ in log-mass): {outliers_3sigma}/{len(masses)}")
+            print(f"  Potential outliers (2σ in log-M200): {outliers_2sigma}/{len(m200_masses)}")
+            print(f"  Potential outliers (3σ in log-M200): {outliers_3sigma}/{len(m200_masses)}")
         
         # Direct log-mass difference outliers
-        log_deviations = np.abs(log_masses - mean_log_mass)
+        log_deviations = np.abs(log_m200_masses - mean_log_m200_mass)
         outliers_02dex = np.sum(log_deviations > 0.2)  # Factor of ~1.6
         outliers_03dex = np.sum(log_deviations > 0.3)  # Factor of ~2.0
         outliers_05dex = np.sum(log_deviations > 0.5)  # Factor of ~3.2
         
-        print(f"  Outliers >0.2 dex (~1.6x): {outliers_02dex}/{len(masses)}")
-        print(f"  Outliers >0.3 dex (~2.0x): {outliers_03dex}/{len(masses)}")
-        print(f"  Outliers >0.5 dex (~3.2x): {outliers_05dex}/{len(masses)}")
+        print(f"  Outliers >0.2 dex (~1.6x): {outliers_02dex}/{len(m200_masses)}")
+        print(f"  Outliers >0.3 dex (~2.0x): {outliers_03dex}/{len(m200_masses)}")
+        print(f"  Outliers >0.5 dex (~3.2x): {outliers_05dex}/{len(m200_masses)}")
 
 def enhanced_find_stable_haloes(mcmc_data, config, 
                                mass_outlier_threshold=0.3,  # 0.3 dex = factor of ~2
@@ -449,7 +496,7 @@ def enhanced_find_stable_haloes(mcmc_data, config,
     """
     Wrapper function that can be used as a drop-in replacement for find_stable_haloes.
     
-    Default mass_outlier_threshold of 0.3 dex means halos with masses differing by more 
+    Default mass_outlier_threshold of 0.3 dex means halos with M200 masses differing by more 
     than a factor of ~2 from the cluster mean will be filtered out.
     """
     return find_stable_haloes_with_mass_filtering(
