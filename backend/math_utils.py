@@ -1,13 +1,11 @@
 import numpy as np
+from typing import Tuple
 
 __all__ = [
     '_safe_covariance',
-    '_sym_eig_sqrt_inv', 
-    '_matrix_sqrt',
-    '_matrix_invsqrt',
     '_mean_matter_density_Msun_per_Mpc3',
     '_lagrangian_radius_from_mass',
-    '_dimensionless_covariance_metrics'
+    '_dimensionless_covariance_metrics',
 ]
 
 def _safe_covariance(X: np.ndarray, eps: float = 1e-6) -> np.ndarray:
@@ -19,24 +17,6 @@ def _safe_covariance(X: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     C = np.cov(X.T, bias=False)
     # Regularize to keep positive-definite
     return C + eps * np.eye(3)
-
-def _sym_eig_sqrt_inv(S: np.ndarray, invert: bool = False) -> np.ndarray:
-    """
-    Symmetric eigendecomposition -> matrix sqrt or inverse sqrt.
-    """
-    w, V = np.linalg.eigh(S)
-    w = np.clip(w, 1e-12, None)  # avoid negatives
-    if invert:
-        W = np.diag(1.0 / np.sqrt(w))
-    else:
-        W = np.diag(np.sqrt(w))
-    return (V @ W) @ V.T
-
-def _matrix_sqrt(S: np.ndarray) -> np.ndarray:
-    return _sym_eig_sqrt_inv(S, invert=False)
-
-def _matrix_invsqrt(S: np.ndarray) -> np.ndarray:
-    return _sym_eig_sqrt_inv(S, invert=True)
 
 def _mean_matter_density_Msun_per_Mpc3() -> float:
     """

@@ -24,14 +24,10 @@ __all__ = [
     'calculate_lagrangian_volume',
     # math_utils.py exports
     '_safe_covariance',
-    '_sym_eig_sqrt_inv',
-    '_matrix_sqrt',
-    '_matrix_invsqrt',
     '_mean_matter_density_Msun_per_Mpc3',
     '_lagrangian_radius_from_mass',
     '_dimensionless_covariance_metrics',
     # trace_processing.py exports
     '_extract_positions_at_or_after_snapshot',
     '_get_initial_final_positions',
-    '_apply_matched_final_affine'
 ]

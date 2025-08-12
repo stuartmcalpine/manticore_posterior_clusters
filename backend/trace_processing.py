@@ -1,10 +1,9 @@
 import numpy as np
-from .math_utils import _safe_covariance, _matrix_sqrt, _matrix_invsqrt
+from .math_utils import _safe_covariance
 
 __all__ = [
     '_extract_positions_at_or_after_snapshot',
     '_get_initial_final_positions',
-    '_apply_matched_final_affine'
 ]
 
 def _extract_positions_at_or_after_snapshot(trace: dict, key: str, target_snapshot: int) -> np.ndarray | None:
@@ -55,22 +54,3 @@ def _get_initial_final_positions(traces: list, init_snap: int, final_snap: int =
         return np.empty((0, 3)), np.empty((0, 3))
 
     return np.asarray(init_pts), np.asarray(fin_pts)
-
-def _apply_matched_final_affine(X_init_ctrl: np.ndarray,
-                                X_fin_ctrl: np.ndarray,
-                                X_fin_data: np.ndarray) -> np.ndarray:
-    """
-    Build A = S_data * S_ctrl^{-1} from final covariances and apply to control initial residuals.
-    Returns transformed control initial residuals in the control-final mean frame.
-    """
-    # center
-    Xf_ctrl = X_fin_ctrl - X_fin_ctrl.mean(axis=0, keepdims=True)
-    Xf_data = X_fin_data - X_fin_data.mean(axis=0, keepdims=True)
-    Sf_ctrl = _safe_covariance(Xf_ctrl)
-    Sf_data = _safe_covariance(Xf_data)
-
-    A = _matrix_sqrt(Sf_data) @ _matrix_invsqrt(Sf_ctrl)
-
-    Xi_ctrl = X_init_ctrl - X_init_ctrl.mean(axis=0, keepdims=True)
-    Xi_ctrl_hat = (A @ Xi_ctrl.T).T
-    return Xi_ctrl_hat

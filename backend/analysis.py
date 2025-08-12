@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial import ConvexHull
 from .io import load_halo_traces_index, load_specific_halo_traces, load_single_cluster_traces
 from .math_utils import _mean_matter_density_Msun_per_Mpc3, _lagrangian_radius_from_mass, _dimensionless_covariance_metrics
-from .trace_processing import _get_initial_final_positions, _apply_matched_final_affine
+from .trace_processing import _get_initial_final_positions
 from typing import Dict, List, Any
 
 __all__ = [
@@ -18,7 +18,7 @@ def analyze_volume_ratios_batch(clusters,
                                 min_cluster_size=40,
                                 mass_tolerance_dex=0.1,
                                 target_snapshot=10,
-                                use_matched_final: bool = False):
+                                min_match_rate=0.8):
     """
     Enhanced batch analysis: returns mass, legacy volume ratio (convex hull),
     dimensionless scatter ratio (s_ctrl/s_data), and information gain (bits).
@@ -44,7 +44,8 @@ def analyze_volume_ratios_batch(clusters,
     print(f"Processing control matches...")
     cluster_results = find_control_matches_batch(
         constrained_traces_dict, control_index, control_filename, config,
-        mass_tolerance_dex=mass_tolerance_dex, matched_final=use_matched_final
+        mass_tolerance_dex=mass_tolerance_dex,
+        min_match_rate=min_match_rate
     )
     
     print(f"Computing localization metrics (covariance + convex hull)...")
@@ -76,11 +77,6 @@ def analyze_volume_ratios_batch(clusters,
         Xinit_ctrl, Xfin_ctrl = _get_initial_final_positions(control_traces, init_snap=target_snapshot, final_snap=77)
         if Xinit_data.shape[0] < 2 or Xinit_ctrl.shape[0] < 2:
             continue
-        
-        # Matched-final affine control (if requested)
-        if use_matched_final:
-            Xinit_ctrl = _apply_matched_final_affine(Xinit_ctrl, Xfin_ctrl, Xfin_data)
-            # Note: after affine, Xinit_ctrl is already centered in the ctrl-final frame
         
         # Lagrangian radius from the association's mean M200
         M200 = float(cluster_lookup[cluster_id]['mean_m200_mass'])
@@ -151,11 +147,10 @@ def find_control_matches_batch(
     control_filename: str,
     config: Any,
     mass_tolerance_dex: float = 0.1,
-    matched_final: bool = False,
-    recenter: bool = True,
+    min_match_rate: float = 0.8,
 ) -> Dict[int, Dict[str, Any]]:
     """
-    Batch process control matches for multiple clusters using a cached control index.
+    Batch process control matches for multiple clusters using simple 1:1 translation.
 
     Parameters
     ----------
@@ -170,12 +165,8 @@ def find_control_matches_batch(
         Configuration object.
     mass_tolerance_dex : float
         Allowed log10 mass difference for matching control haloes.
-    matched_final : bool
-        If True, this function also computes and returns affine parameters
-        (A, ctrl_final_mean, data_final_mean) based on the final positions.
-    recenter : bool
-        If True, shift control haloes so their final centroid matches the constrained cluster centroid.
-        If False, keep controls in their original coordinates.
+    min_match_rate : float
+        Minimum fraction of constrained haloes that must be matched (0-1).
 
     Returns
     -------
@@ -184,13 +175,6 @@ def find_control_matches_batch(
           cluster_id: {
             'constrained_traces': [...],
             'control_traces': [...],
-            'matched_final': bool,
-            # NEW when matched_final=True and enough points:
-            'affine_params': {
-                'A': (3,3) ndarray,
-                'ctrl_final_mean': (3,) ndarray,
-                'data_final_mean': (3,) ndarray
-            }  # present only if computed successfully
           }, ...
         }
     """
@@ -207,8 +191,7 @@ def find_control_matches_batch(
 
     for cluster_id, constrained_traces in constrained_traces_dict.items():
         # Get final masses and positions for constrained haloes
-        constrained_final_masses: List[float] = []
-        constrained_final_positions: List[np.ndarray] = []
+        constrained_halo_data: List[Dict[str, Any]] = []
 
         for trace in constrained_traces:
             final_idx = np.where(trace['snapshots'] == 77)[0]
@@ -232,22 +215,22 @@ def find_control_matches_batch(
             else:
                 continue
 
-            constrained_final_masses.append(final_mass)
-            constrained_final_positions.append(final_pos)
+            constrained_halo_data.append({
+                'mass': final_mass,
+                'final_pos': final_pos,
+                'trace': trace
+            })
 
-        if len(constrained_final_masses) == 0:
+        if len(constrained_halo_data) == 0:
             continue
 
-        constrained_final_positions = np.array(constrained_final_positions, dtype=float)
-        constrained_mean_position = np.mean(constrained_final_positions, axis=0)
-
-        # Vectorized control mass matching
+        # Mass matching
         log_control_masses = np.log10(control_masses)
-        matched_control_keys: List[str] = []
+        matched_pairs: List[Dict[str, Any]] = []
         used_indices = set()
 
-        for m in constrained_final_masses:
-            log_m = np.log10(m)
+        for constrained_halo in constrained_halo_data:
+            log_m = np.log10(constrained_halo['mass'])
             mass_diffs = np.abs(log_control_masses - log_m)
             valid = np.where(mass_diffs <= mass_tolerance_dex)[0]
             # avoid duplicate picks
@@ -255,14 +238,26 @@ def find_control_matches_batch(
             if len(valid) == 0:
                 continue
             best_local = int(valid[np.argmin(mass_diffs[valid])])
-            matched_control_keys.append(control_keys[best_local])
+            
+            matched_pairs.append({
+                'constrained_trace': constrained_halo['trace'],
+                'constrained_final_pos': constrained_halo['final_pos'],
+                'control_key': control_keys[best_local],
+            })
             used_indices.add(best_local)
             all_needed_control_keys.add(control_keys[best_local])
 
+        # Check match success rate
+        total_constrained = len(constrained_halo_data)
+        successful_matches = len(matched_pairs)
+        match_success_rate = successful_matches / total_constrained if total_constrained > 0 else 0.0
+
+        if match_success_rate < min_match_rate:
+            # Skip this cluster
+            continue
+
         cluster_match_info[cluster_id] = {
-            'constrained_traces': constrained_traces,
-            'matched_control_keys': matched_control_keys,
-            'constrained_mean_position': constrained_mean_position,
+            'matched_pairs': matched_pairs,
         }
 
     # Batch load control traces
@@ -273,61 +268,49 @@ def find_control_matches_batch(
     )
 
     for cluster_id, match_info in cluster_match_info.items():
-        matched_control_keys = match_info['matched_control_keys']
-        constrained_mean_position = match_info['constrained_mean_position']
-        constrained_traces = match_info['constrained_traces']
+        matched_pairs = match_info['matched_pairs']
 
-        recentered_control_traces: List[Dict[str, Any]] = []
-        for control_key in matched_control_keys:
+        translated_control_traces: List[Dict[str, Any]] = []
+        constrained_traces_for_cluster: List[Dict[str, Any]] = []
+
+        for pair in matched_pairs:
+            control_key = pair['control_key']
+            constrained_final_pos = pair['constrained_final_pos']
+            constrained_trace = pair['constrained_trace']
+            
             if control_key not in all_control_traces:
                 continue
 
-            rec = all_control_traces[control_key].copy()
+            control_trace = all_control_traces[control_key].copy()
+            
+            # Get control final position
+            final_idx = np.where(control_trace['snapshots'] == 77)[0]
+            if len(final_idx) == 0:
+                continue
+            fi = final_idx[0]
+            
+            if 'BoundSubhalo/CentreOfMass' in control_trace:
+                control_final_pos = control_trace['BoundSubhalo/CentreOfMass'][fi]
+            elif 'SO/200_crit/CentreOfMass' in control_trace:
+                control_final_pos = control_trace['SO/200_crit/CentreOfMass'][fi]
+            else:
+                continue
 
-            if recenter:
-                # Get control final position from index (same ordering as control_keys)
-                try:
-                    control_idx = control_keys.index(control_key)
-                except ValueError:
-                    # Shouldn't happen; skip if it does
-                    continue
-                control_final_pos = control_positions[control_idx]
-                offset = constrained_mean_position - control_final_pos
+            # Calculate translation offset
+            offset = constrained_final_pos - control_final_pos
 
-                # Apply offset to all snapshots
-                for poskey in ['BoundSubhalo/CentreOfMass', 'SO/200_crit/CentreOfMass']:
-                    if poskey in rec:
-                        rec[poskey] = rec[poskey] + offset
+            # Apply offset to all positions in control trace
+            for poskey in ['BoundSubhalo/CentreOfMass', 'SO/200_crit/CentreOfMass']:
+                if poskey in control_trace:
+                    control_trace[poskey] = control_trace[poskey] + offset
 
-            recentered_control_traces.append(rec)
+            translated_control_traces.append(control_trace)
+            constrained_traces_for_cluster.append(constrained_trace)
 
-        # Prepare return payload for this cluster
-        payload: Dict[str, Any] = {
-            'constrained_traces': constrained_traces,
-            'control_traces': recentered_control_traces,
-            'matched_final': matched_final,
+        cluster_results[cluster_id] = {
+            'constrained_traces': constrained_traces_for_cluster,
+            'control_traces': translated_control_traces,
         }
-
-        # If requested, compute and attach affine params (if enough points)
-        if matched_final and len(recentered_control_traces) >= 2 and len(constrained_traces) >= 2:
-            # Extract final positions for both sets to compute A
-            # We rely on the same helper used elsewhere to respect your trace schema.
-            Xinit_data, Xfin_data = _get_initial_final_positions(constrained_traces, init_snap=10, final_snap=77)
-            Xinit_ctrl, Xfin_ctrl = _get_initial_final_positions(recentered_control_traces, init_snap=10, final_snap=77)
-
-            try:
-                if Xfin_ctrl.shape[0] >= 2 and Xfin_data.shape[0] >= 2:
-                    A, mu_ctrl, mu_data = _compute_affine_from_final_clouds(Xfin_ctrl, Xfin_data)
-                    payload['affine_params'] = {
-                        'A': A,
-                        'ctrl_final_mean': mu_ctrl,
-                        'data_final_mean': mu_data,
-                    }
-            except Exception:
-                # Be robust: if affine fails (e.g., degenerate covariance), just omit it.
-                pass
-
-        cluster_results[cluster_id] = payload
 
     return cluster_results
 
@@ -337,13 +320,11 @@ def find_control_matches_and_recenter_single(
     config: Any,
     trace_filename: str,
     mass_tolerance_dex: float = 0.1,
-    use_matched_final: bool = False,
-    recenter_controls: bool = True,
+    min_match_rate: float = 0.8,
 ):
     """
     Convenience wrapper: load traces for one constrained cluster, match
-    mass-matched controls, optionally recenter (and optionally matched-final),
-    and return both lists.
+    mass-matched controls with 1:1 translation, and return both lists.
 
     Parameters
     ----------
@@ -355,31 +336,27 @@ def find_control_matches_and_recenter_single(
         Filename of the constrained trace HDF5.
     mass_tolerance_dex : float
         Allowed log10 mass difference for matching control haloes.
-    use_matched_final : bool
-        If True, compute affine params from final clouds as part of the batch.
-    recenter_controls : bool
-        If False, return controls in their *true* original coordinates without recentering.
+    min_match_rate : float
+        Minimum fraction of constrained haloes that must be matched (0-1).
 
     Returns
     -------
-    constrained, controls, affine_params
+    constrained, controls
         - constrained: list of constrained traces (or None)
         - controls: list of matched control traces (or None)
-        - affine_params: dict with keys {'A', 'ctrl_final_mean', 'data_final_mean'} if computed,
-                         otherwise None.
     """
     # Load control index
     control_filename = f"control_halo_traces_mass_{config.mode4.m200_mass_cut:.1e}_radius_{config.mode4.radius_cut}.h5"
     control_index = load_halo_traces_index(config.global_config.output_dir, filename=control_filename)
     if control_index is None:
         print(f"[warn] Could not load control index from {control_filename}")
-        return None, None, None
+        return None, None
 
     # Load constrained traces for this cluster
     constrained_traces = load_single_cluster_traces(cluster_id, config.global_config.output_dir, filename=trace_filename)
     if not constrained_traces:
         print(f"[warn] No constrained traces for cluster {cluster_id}")
-        return None, None, None
+        return None, None
 
     constrained_traces_dict = {cluster_id: constrained_traces}
     results = find_control_matches_batch(
@@ -388,14 +365,11 @@ def find_control_matches_and_recenter_single(
         control_filename,
         config,
         mass_tolerance_dex=mass_tolerance_dex,
-        matched_final=use_matched_final if recenter_controls else False,
-        recenter=recenter_controls,
+        min_match_rate=min_match_rate,
     )
 
     if cluster_id not in results:
-        print(f"[warn] No control matches returned for cluster {cluster_id}")
-        return None, None, None
+        print(f"[warn] Cluster {cluster_id} does not meet minimum match rate threshold of {min_match_rate:.1%}")
+        return None, None
 
-    affine = results[cluster_id].get('affine_params', None)
-    return results[cluster_id]['constrained_traces'], results[cluster_id]['control_traces'], affine
-
+    return results[cluster_id]['constrained_traces'], results[cluster_id]['control_traces']

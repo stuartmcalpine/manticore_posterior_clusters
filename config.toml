@@ -21,11 +21,11 @@ min_cluster_size = 40
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
 mcmc_start = 0
 mcmc_end = 9
-m200_mass_cut = 0.8e14
-radius_cut = 400.0
+m200_mass_cut = 0.5e14
+radius_cut = 200.0
 num_samplings = 8
-eps = 1.75
-min_samples = 9
+eps = 3.75
+min_samples = 5
 
 [mode4]
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
