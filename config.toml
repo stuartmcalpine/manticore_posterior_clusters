@@ -22,16 +22,16 @@ basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimula
 mcmc_start = 0
 mcmc_end = 9
 m200_mass_cut = 0.8e14
-radius_cut = 500.0
+radius_cut = 400.0
 num_samplings = 8
-eps = 3.0
-min_samples = 5
+eps = 1.75
+min_samples = 9
 
 [mode4]
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
 mcmc_start = 0
 mcmc_end = 9
-m200_mass_cut = 1.0e15
+m200_mass_cut = 0.5e14
 radius_cut = 400.0
 target_snapshot = 10
 observer_coords = [500.0, 500.0, 500.0]

@@ -1,6 +1,6 @@
 import numpy as np
 from backend.config_loader import load_config
-from backend.utils import ensure_output_dir, save_clusters_to_hdf5
+from backend.io import ensure_output_dir, save_clusters_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, enhanced_find_stable_haloes, analyze_mass_distribution_in_clusters
 
 def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering=True, 

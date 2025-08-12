@@ -1,6 +1,6 @@
 import numpy as np
 from backend.config_loader import load_config
-from backend.utils import ensure_output_dir, save_clusters_to_hdf5
+from backend.io import ensure_output_dir, save_clusters_to_hdf5
 from backend.common_clustering import find_stable_haloes
 import os
 from pymanticore.swift_analysis import SOAPData

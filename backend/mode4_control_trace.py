@@ -4,7 +4,7 @@ import os
 from pymanticore.swift_analysis import SOAPData
 from collections import defaultdict
 from backend.config_loader import load_config
-from backend.utils import save_halo_traces_to_hdf5
+from backend.io import save_halo_traces_to_hdf5
 
 class ControlHaloTracer:
     def __init__(self, basedir, observer_coords, rank=0):
@@ -284,24 +284,24 @@ def run_mode4(config_path="config.toml", output_dir="output"):
             mcmc_traces = tracer.trace_haloes_for_mcmc(halo_list, mcmc_id, metadata_to_broadcast['target_snapshot'])
             my_halo_traces.update(mcmc_traces)
             print(f"Rank {rank}: Successfully traced {len(mcmc_traces)} control haloes for MCMC {mcmc_id}")
-            
+
         except Exception as e:
             print(f"Rank {rank}: Error tracing control MCMC {mcmc_id}: {e}")
             continue
-    
+
     print(f"Rank {rank}: Completed tracing {len(my_halo_traces)} total control haloes")
-    
+
     # Gather all results to root
     all_traces = comm.gather(my_halo_traces, root=0)
-    
+
     if rank == 0:
         combined_halo_traces = {}
         for rank_traces in all_traces:
             combined_halo_traces.update(rank_traces)
-        
+
         print(f"Combined {len(combined_halo_traces)} control halo traces from all ranks")
         print("Saving control halo traces to HDF5...")
-        
+
         fname = f"control_halo_traces_mass_{config.mode4.m200_mass_cut:.1e}_radius_{config.mode4.radius_cut}.h5"
         save_halo_traces_to_hdf5(combined_halo_traces, config, metadata_to_broadcast, output_dir, filename=fname)
         print("Mode 4 complete!")

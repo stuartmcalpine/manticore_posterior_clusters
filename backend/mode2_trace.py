@@ -4,7 +4,7 @@ import os
 from pymanticore.swift_analysis import SOAPData
 from collections import defaultdict
 from backend.config_loader import load_config
-from backend.utils import load_clusters_from_hdf5, save_halo_traces_to_hdf5
+from backend.io import load_clusters_from_hdf5, save_halo_traces_to_hdf5
 
 class HaloTracer:
     def __init__(self, basedir, observer_coords, rank=0):
