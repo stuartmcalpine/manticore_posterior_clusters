@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial import ConvexHull
 from .io import load_halo_traces_index, load_specific_halo_traces, load_single_cluster_traces
 from .math_utils import _mean_matter_density_Msun_per_Mpc3, _lagrangian_radius_from_mass, _dimensionless_covariance_metrics
-from .trace_processing import _get_initial_final_positions
+from .trace_processing import _get_initial_final_positions, _extract_positions_at_or_after_snapshot
 from typing import Dict, List, Any
 
 __all__ = [
@@ -45,7 +45,8 @@ def analyze_volume_ratios_batch(clusters,
     cluster_results = find_control_matches_batch(
         constrained_traces_dict, control_index, control_filename, config,
         mass_tolerance_dex=mass_tolerance_dex,
-        min_match_rate=min_match_rate
+        min_match_rate=min_match_rate,
+        target_snapshot=target_snapshot
     )
     
     print(f"Computing localization metrics (covariance + convex hull)...")
@@ -148,6 +149,8 @@ def find_control_matches_batch(
     config: Any,
     mass_tolerance_dex: float = 0.1,
     min_match_rate: float = 0.8,
+    target_snapshot: int = 10,
+    distance_tolerance_rel: float = 0.2,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Batch process control matches for multiple clusters using simple 1:1 translation.
@@ -167,6 +170,10 @@ def find_control_matches_batch(
         Allowed log10 mass difference for matching control haloes.
     min_match_rate : float
         Minimum fraction of constrained haloes that must be matched (0-1).
+    target_snapshot : int
+        Snapshot to use for initial positions.
+    distance_tolerance_rel : float
+        Relative tolerance for distance traveled (e.g., 0.2 = 20%).
 
     Returns
     -------
@@ -184,13 +191,23 @@ def find_control_matches_batch(
     control_masses = control_index['final_m200_masses']
     control_positions = control_index['final_positions']
     control_keys = control_index['halo_keys']
+    
+    # Check if new distance data is available
+    has_distance_data = ('distance_traveled_10' in control_index and 
+                        'initial_positions_10' in control_index)
+    
+    if has_distance_data:
+        control_distances = control_index['distance_traveled_10']
+        print(f"Using precomputed distance data for {len(control_distances)} control haloes")
+    else:
+        print("Warning: No precomputed distance data found. Distance filtering will be skipped.")
 
     # Collect all needed control keys across all clusters
     all_needed_control_keys = set()
     cluster_match_info: Dict[int, Dict[str, Any]] = {}
 
     for cluster_id, constrained_traces in constrained_traces_dict.items():
-        # Get final masses and positions for constrained haloes
+        # Get final masses, positions, and distances for constrained haloes
         constrained_halo_data: List[Dict[str, Any]] = []
 
         for trace in constrained_traces:
@@ -202,50 +219,79 @@ def find_control_matches_batch(
             # mass
             if 'BoundSubhalo/TotalMass' in trace:
                 final_mass = trace['BoundSubhalo/TotalMass'][fi]
+                poskey = 'BoundSubhalo/CentreOfMass'
             elif 'SO/200_crit/TotalMass' in trace:
                 final_mass = trace['SO/200_crit/TotalMass'][fi]
+                poskey = 'SO/200_crit/CentreOfMass'
             else:
                 continue
 
-            # position
-            if 'BoundSubhalo/CentreOfMass' in trace:
-                final_pos = trace['BoundSubhalo/CentreOfMass'][fi]
-            elif 'SO/200_crit/CentreOfMass' in trace:
-                final_pos = trace['SO/200_crit/CentreOfMass'][fi]
+            # final position
+            if poskey in trace:
+                final_pos = trace[poskey][fi]
             else:
                 continue
+
+            # distance traveled (only if we have control distance data)
+            distance_traveled = None
+            if has_distance_data:
+                initial_pos = _extract_positions_at_or_after_snapshot(trace, poskey, target_snapshot)
+                if initial_pos is not None:
+                    distance_traveled = float(np.linalg.norm(final_pos - initial_pos))
 
             constrained_halo_data.append({
                 'mass': final_mass,
                 'final_pos': final_pos,
+                'distance_traveled': distance_traveled,
                 'trace': trace
             })
 
         if len(constrained_halo_data) == 0:
             continue
 
-        # Mass matching
+        # Mass and distance matching
         log_control_masses = np.log10(control_masses)
         matched_pairs: List[Dict[str, Any]] = []
         used_indices = set()
 
         for constrained_halo in constrained_halo_data:
             log_m = np.log10(constrained_halo['mass'])
-            mass_diffs = np.abs(log_control_masses - log_m)
-            valid = np.where(mass_diffs <= mass_tolerance_dex)[0]
-            # avoid duplicate picks
-            valid = [idx for idx in valid if idx not in used_indices]
-            if len(valid) == 0:
-                continue
-            best_local = int(valid[np.argmin(mass_diffs[valid])])
+            constrained_distance = constrained_halo['distance_traveled']
             
+            mass_diffs = np.abs(log_control_masses - log_m)
+            mass_valid = np.where(mass_diffs <= mass_tolerance_dex)[0]
+            # avoid duplicate picks
+            mass_valid = [idx for idx in mass_valid if idx not in used_indices]
+            
+            if len(mass_valid) == 0:
+                continue
+
+            # Apply distance constraint if available
+            if has_distance_data and constrained_distance is not None:
+                # Filter by distance tolerance
+                distance_valid = []
+                for idx in mass_valid:
+                    control_distance = control_distances[idx]
+                    distance_diff_rel = abs(control_distance - constrained_distance) / constrained_distance if constrained_distance > 0 else float('inf')
+                    if distance_diff_rel <= distance_tolerance_rel:
+                        distance_valid.append(idx)
+                
+                if len(distance_valid) == 0:
+                    continue
+                
+                # Choose best mass match among distance-valid candidates
+                best_idx = distance_valid[np.argmin(mass_diffs[distance_valid])]
+            else:
+                # No distance constraint, use best mass match
+                best_idx = mass_valid[np.argmin(mass_diffs[mass_valid])]
+
             matched_pairs.append({
                 'constrained_trace': constrained_halo['trace'],
                 'constrained_final_pos': constrained_halo['final_pos'],
-                'control_key': control_keys[best_local],
+                'control_key': control_keys[best_idx],
             })
-            used_indices.add(best_local)
-            all_needed_control_keys.add(control_keys[best_local])
+            used_indices.add(best_idx)
+            all_needed_control_keys.add(control_keys[best_idx])
 
         # Check match success rate
         total_constrained = len(constrained_halo_data)
@@ -321,6 +367,8 @@ def find_control_matches_and_recenter_single(
     trace_filename: str,
     mass_tolerance_dex: float = 0.1,
     min_match_rate: float = 0.8,
+    target_snapshot: int = 10,
+    distance_tolerance_rel: float = 0.2,
 ):
     """
     Convenience wrapper: load traces for one constrained cluster, match
@@ -338,6 +386,10 @@ def find_control_matches_and_recenter_single(
         Allowed log10 mass difference for matching control haloes.
     min_match_rate : float
         Minimum fraction of constrained haloes that must be matched (0-1).
+    target_snapshot : int
+        Snapshot to use for initial positions.
+    distance_tolerance_rel : float
+        Relative tolerance for distance traveled (e.g., 0.2 = 20%).
 
     Returns
     -------
@@ -366,6 +418,8 @@ def find_control_matches_and_recenter_single(
         config,
         mass_tolerance_dex=mass_tolerance_dex,
         min_match_rate=min_match_rate,
+        target_snapshot=target_snapshot,
+        distance_tolerance_rel=distance_tolerance_rel,
     )
 
     if cluster_id not in results:

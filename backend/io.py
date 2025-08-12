@@ -140,6 +140,18 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
 def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, output_dir, filename="halo_traces.h5"):
     filepath = os.path.join(output_dir, filename)
     
+    def _extract_positions_at_or_after_snapshot(trace_data, key, target_snapshot):
+        snapshots = trace_data['snapshots']
+        positions = trace_data.get(key, None)
+        if positions is None:
+            return None
+        valid = snapshots[snapshots >= target_snapshot]
+        if len(valid) == 0:
+            return None
+        earliest = int(np.min(valid))
+        idx = np.where(snapshots == earliest)[0][0]
+        return positions[idx]
+    
     with h5py.File(filepath, 'w') as f:
         meta_grp = f.create_group('metadata')
         meta_grp.attrs['target_snapshot'] = config.mode2.target_snapshot
@@ -155,6 +167,8 @@ def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, output_dir, 
         
         final_m200_masses = []
         final_positions = []
+        initial_positions_10 = []
+        distance_traveled_10 = []
         cluster_ids = []
         halo_keys = []
         
@@ -162,22 +176,35 @@ def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, output_dir, 
             # Find final snapshot (77) data
             final_idx = np.where(trace_data['snapshots'] == 77)[0]
             if len(final_idx) > 0:
+                fi = final_idx[0]
+                
+                # Get final mass and position
                 if 'BoundSubhalo/TotalMass' in trace_data:
-                    final_mass = trace_data['BoundSubhalo/TotalMass'][final_idx[0]]
+                    final_mass = trace_data['BoundSubhalo/TotalMass'][fi]
+                    poskey = 'BoundSubhalo/CentreOfMass'
                 elif 'SO/200_crit/TotalMass' in trace_data:
-                    final_mass = trace_data['SO/200_crit/TotalMass'][final_idx[0]]
+                    final_mass = trace_data['SO/200_crit/TotalMass'][fi]
+                    poskey = 'SO/200_crit/CentreOfMass'
                 else:
                     continue
                 
-                if 'BoundSubhalo/CentreOfMass' in trace_data:
-                    final_pos = trace_data['BoundSubhalo/CentreOfMass'][final_idx[0]]
-                elif 'SO/200_crit/CentreOfMass' in trace_data:
-                    final_pos = trace_data['SO/200_crit/CentreOfMass'][final_idx[0]]
-                else:
+                if poskey not in trace_data:
                     continue
+                    
+                final_pos = trace_data[poskey][fi]
+                
+                # Get initial position at snapshot 10
+                initial_pos = _extract_positions_at_or_after_snapshot(trace_data, poskey, 10)
+                if initial_pos is None:
+                    continue
+                
+                # Calculate distance traveled
+                distance = float(np.linalg.norm(final_pos - initial_pos))
                 
                 final_m200_masses.append(final_mass)
                 final_positions.append(final_pos)
+                initial_positions_10.append(initial_pos)
+                distance_traveled_10.append(distance)
                 cluster_ids.append(trace_data['cluster_id'])
                 halo_keys.append(halo_key)
         
@@ -185,6 +212,8 @@ def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, output_dir, 
         if len(final_m200_masses) > 0:
             index_grp.create_dataset('final_m200_masses', data=np.array(final_m200_masses))
             index_grp.create_dataset('final_positions', data=np.array(final_positions))
+            index_grp.create_dataset('initial_positions_10', data=np.array(initial_positions_10))
+            index_grp.create_dataset('distance_traveled_10', data=np.array(distance_traveled_10))
             index_grp.create_dataset('cluster_ids', data=np.array(cluster_ids))
             
             # String arrays need special handling in HDF5
@@ -221,6 +250,12 @@ def load_halo_traces_index(output_dir, filename="halo_traces.h5"):
                 'cluster_ids': index_grp['cluster_ids'][:],
                 'halo_keys': [key.decode() if isinstance(key, bytes) else key for key in index_grp['halo_keys'][:]]
             }
+            
+            # Load new fields if they exist
+            if 'initial_positions_10' in index_grp:
+                index_data['initial_positions_10'] = index_grp['initial_positions_10'][:]
+            if 'distance_traveled_10' in index_grp:
+                index_data['distance_traveled_10'] = index_grp['distance_traveled_10'][:]
             
             return index_data
     except Exception as e:
