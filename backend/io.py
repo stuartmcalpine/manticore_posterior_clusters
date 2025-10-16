@@ -61,6 +61,10 @@ def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance
             cluster_grp.attrs['m500_std'] = cluster.get('m500_std', np.nan)
             cluster_grp.attrs['log10_m200_mass_std'] = cluster['log10_m200_mass_std']
             cluster_grp.attrs['log10_m500_std'] = cluster['log10_m500_std']
+            cluster_grp.attrs['axis_ratio_ba'] = cluster.get('axis_ratio_ba', np.nan)
+            cluster_grp.attrs['axis_ratio_ca'] = cluster.get('axis_ratio_ca', np.nan)
+            cluster_grp.attrs['asphericity'] = cluster.get('asphericity', np.nan)
+            cluster_grp.attrs['prolateness'] = cluster.get('prolateness', np.nan)
 
             member_grp = cluster_grp.create_group('members')
             
@@ -129,6 +133,10 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
                 'log10_m500_std': float(cluster_grp.attrs['log10_m500_std']),
                 'subhalo_mass_std': float(cluster_grp.attrs.get('subhalo_mass_std', np.nan)),
                 'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
+                'axis_ratio_ba': float(cluster_grp.attrs.get('axis_ratio_ba', np.nan)),
+                'axis_ratio_ca': float(cluster_grp.attrs.get('axis_ratio_ca', np.nan)),
+                'asphericity': float(cluster_grp.attrs.get('asphericity', np.nan)),
+                'prolateness': float(cluster_grp.attrs.get('prolateness', np.nan)),
                 'members': members,
                 'member_data': member_data
             }
@@ -462,6 +470,10 @@ def load_single_cluster_members(output_dir, filename, cluster_id):
                'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
                'log10_m200_std': float(cluster_grp.attrs.get('log10_m200_std', np.nan)),
                'log10_m500_std': float(cluster_grp.attrs.get('log10_m500_std', np.nan)),
+               'axis_ratio_ba': float(cluster_grp.attrs.get('axis_ratio_ba', np.nan)),
+               'axis_ratio_ca': float(cluster_grp.attrs.get('axis_ratio_ca', np.nan)),
+               'asphericity': float(cluster_grp.attrs.get('asphericity', np.nan)),
+               'prolateness': float(cluster_grp.attrs.get('prolateness', np.nan)),
            }
 
            # Load member data

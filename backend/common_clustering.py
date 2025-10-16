@@ -3,6 +3,47 @@ import os
 from pymanticore.swift_analysis import SOAPData
 from sklearn.cluster import DBSCAN
 
+def _compute_shape_measures(positions):
+    """Compute shape measures from position covariance matrix eigenvalues"""
+    if len(positions) < 10:
+        return {
+            'axis_ratio_ba': np.nan,
+            'axis_ratio_ca': np.nan,
+            'asphericity': np.nan,
+            'prolateness': np.nan
+        }
+    
+    try:
+        cov_matrix = np.cov(positions.T)
+        eigenvals, _ = np.linalg.eigh(cov_matrix)
+        eigenvals = np.sort(eigenvals)[::-1]  # Sort descending
+        eigenvals = np.maximum(eigenvals, 1e-12)  # Avoid zero eigenvalues
+        
+        a, b, c = np.sqrt(eigenvals)
+        
+        axis_ratio_ba = b/a if a > 0 else np.nan
+        axis_ratio_ca = c/a if a > 0 else np.nan
+        
+        sum_sq = a**2 + b**2 + c**2
+        asphericity = 1 - 3*c**2/sum_sq if sum_sq > 0 else np.nan
+        
+        denom = a**2 - c**2
+        prolateness = (a**2 - b**2)/denom if denom > 0 else np.nan
+        
+        return {
+            'axis_ratio_ba': float(axis_ratio_ba),
+            'axis_ratio_ca': float(axis_ratio_ca),
+            'asphericity': float(asphericity),
+            'prolateness': float(prolateness)
+        }
+    except:
+        return {
+            'axis_ratio_ba': np.nan,
+            'axis_ratio_ca': np.nan,
+            'asphericity': np.nan,
+            'prolateness': np.nan
+        }
+
 def enforce_mcmc_constraint(cluster_labels, positions, mcmc_ids):
     """Post-process clusters to ensure at most one halo per MCMC per cluster"""
     unique_clusters = np.unique(cluster_labels)
@@ -304,6 +345,9 @@ def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
         m500_std = np.std(valid_m500) if len(valid_m500) > 0 else np.nan
         log10_m500_std = np.std(np.log10(valid_m500)) if len(valid_m500) > 0 else np.nan
 
+        # Compute shape measures
+        shape_measures = _compute_shape_measures(cluster_positions)
+
         # Extract all member data for this cluster
         member_data = {}
         for key, data in combined_data.items():
@@ -324,6 +368,10 @@ def find_stable_haloes(mcmc_data, config, eps=None, min_samples=None):
             'member_data': member_data,
             'log10_m200_mass_std': log10_m200_mass_std,
             'log10_m500_std': log10_m500_std,
+            'axis_ratio_ba': shape_measures['axis_ratio_ba'],
+            'axis_ratio_ca': shape_measures['axis_ratio_ca'],
+            'asphericity': shape_measures['asphericity'],
+            'prolateness': shape_measures['prolateness'],
         })
     
     return stable_haloes, positions, m200_masses, halo_provenance, cluster_labels
@@ -417,6 +465,9 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
         m200_mass_range = np.max(cluster_m200_masses) - np.min(cluster_m200_masses)
         log_m200_mass_range = np.max(cluster_log_m200_masses) - np.min(cluster_log_m200_masses)
         m200_mass_ratio_range = 10**log_m200_mass_range  # Mass ratio between min and max
+
+        # Compute shape measures
+        shape_measures = _compute_shape_measures(cluster_positions)
         
         # Extract all member data for this cluster
         member_data = {}
@@ -444,6 +495,10 @@ def find_stable_haloes_with_mass_filtering(mcmc_data, config, eps=None, min_samp
             'member_data': member_data,
             'log10_m200_mass_std': log10_m200_mass_std,
             'log10_m500_std': log10_m500_std,
+            'axis_ratio_ba': shape_measures['axis_ratio_ba'],
+            'axis_ratio_ca': shape_measures['axis_ratio_ca'],
+            'asphericity': shape_measures['asphericity'],
+            'prolateness': shape_measures['prolateness'],
         })
     
     return stable_haloes, positions, m200_masses, halo_provenance, cluster_labels
