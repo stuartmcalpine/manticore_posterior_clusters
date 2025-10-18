@@ -1,6 +1,6 @@
 # Manticore Posterior Clustering Pipeline
 
-A scientific computing pipeline for analyzing dark matter halo clustering in cosmological simulations. This tool identifies stable halo associations across multiple MCMC simulation samples and traces their evolution through cosmic time.
+A scientific computing pipeline for analyzing dark matter halo clustering across the Manticore-Local (McAlpine et al. 2025) posterior resimulations. This tool identifies stable halo associations across multiple MCMC simulation samples and traces their evolution through cosmic time.
 
 ## Overview
 
@@ -19,7 +19,7 @@ Identifies stable dark matter halo clusters across multiple MCMC simulation samp
 - Saves results to HDF5
 
 ### Mode 2: Cluster Tracing (MPI-enabled)
-Traces identified clusters backwards through time using merger tree data.
+Traces identified clusters backwards through time using merger tree data from HBT/SOAP outputs.
 
 **What it does:**
 - Loads clusters from Mode 1
@@ -58,7 +58,7 @@ toml
 mpi4py  # For parallel modes (2 and 4)
 
 # Project-specific
-pymanticore  # Custom package for SWIFT simulation analysis
+pymanticore  # Custom package for SWIFT simulation analysis of Manticore resimulations
 ```
 
 ## Usage
@@ -219,7 +219,3 @@ print(f"Mean information gain: {info_bits.mean():.2f} bits")
 ## Citation
 
 If you use this pipeline in your research, please cite the Manticore project papers.
-
-## License
-
-[Specify your license here]

@@ -18,7 +18,8 @@ def analyze_volume_ratios_batch(clusters,
                                 min_cluster_size=40,
                                 mass_tolerance_dex=0.1,
                                 target_snapshot=10,
-                                min_match_rate=0.8):
+                                min_match_rate=0.8,
+                                output_dir=None):
     """
     Enhanced batch analysis: returns mass, legacy volume ratio (convex hull),
     dimensionless scatter ratio (s_ctrl/s_data), and information gain (bits).
@@ -27,8 +28,10 @@ def analyze_volume_ratios_batch(clusters,
     large_clusters = [cluster for cluster in clusters if cluster['cluster_size'] >= min_cluster_size]
     
     print(f"Loading control index...")
+    if output_dir is None:
+        output_dir = config.global_config.output_dir
     control_filename = f"control_halo_traces_mass_{config.mode4.m200_mass_cut:.1e}_radius_{config.mode4.radius_cut}.h5"
-    control_index = load_halo_traces_index(config.global_config.output_dir, filename=control_filename)
+    control_index = load_halo_traces_index(output_dir, filename=control_filename)
     if control_index is None:
         print(f"Could not load control index from {control_filename}")
         return (np.array([]), np.array([]), np.array([]), np.array([]), [], np.array([]))
@@ -37,7 +40,7 @@ def analyze_volume_ratios_batch(clusters,
     constrained_traces_dict = {}
     for cluster in large_clusters:
         cluster_id = cluster['cluster_id']
-        traces = load_single_cluster_traces(cluster_id, config.global_config.output_dir, filename=trace_filename)
+        traces = load_single_cluster_traces(cluster_id, output_dir, filename=trace_filename)
         if traces:
             constrained_traces_dict[cluster_id] = traces
     
@@ -46,7 +49,8 @@ def analyze_volume_ratios_batch(clusters,
         constrained_traces_dict, control_index, control_filename, config,
         mass_tolerance_dex=mass_tolerance_dex,
         min_match_rate=min_match_rate,
-        target_snapshot=target_snapshot
+        target_snapshot=target_snapshot,
+        output_dir=output_dir
     )
     
     print(f"Computing localization metrics (covariance + convex hull)...")
@@ -151,6 +155,7 @@ def find_control_matches_batch(
     min_match_rate: float = 0.8,
     target_snapshot: int = 10,
     distance_tolerance_rel: float = 0.2,
+    output_dir: str = None,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Batch process control matches for multiple clusters using simple 1:1 translation.
@@ -307,9 +312,11 @@ def find_control_matches_batch(
         }
 
     # Batch load control traces
+    if output_dir is None:
+        output_dir = config.global_config.output_dir
     all_control_traces = load_specific_halo_traces(
         list(all_needed_control_keys),
-        config.global_config.output_dir,
+        output_dir,
         filename=control_filename,
     )
 
@@ -369,6 +376,7 @@ def find_control_matches_and_recenter_single(
     min_match_rate: float = 0.8,
     target_snapshot: int = 10,
     distance_tolerance_rel: float = 0.2,
+    output_dir: str = None,
 ):
     """
     Convenience wrapper: load traces for one constrained cluster, match
@@ -398,14 +406,16 @@ def find_control_matches_and_recenter_single(
         - controls: list of matched control traces (or None)
     """
     # Load control index
+    if output_dir is None:
+        output_dir = config.global_config.output_dir
     control_filename = f"control_halo_traces_mass_{config.mode4.m200_mass_cut:.1e}_radius_{config.mode4.radius_cut}.h5"
-    control_index = load_halo_traces_index(config.global_config.output_dir, filename=control_filename)
+    control_index = load_halo_traces_index(output_dir, filename=control_filename)
     if control_index is None:
         print(f"[warn] Could not load control index from {control_filename}")
         return None, None
 
     # Load constrained traces for this cluster
-    constrained_traces = load_single_cluster_traces(cluster_id, config.global_config.output_dir, filename=trace_filename)
+    constrained_traces = load_single_cluster_traces(cluster_id, output_dir, filename=trace_filename)
     if not constrained_traces:
         print(f"[warn] No constrained traces for cluster {cluster_id}")
         return None, None
@@ -420,6 +430,7 @@ def find_control_matches_and_recenter_single(
         min_match_rate=min_match_rate,
         target_snapshot=target_snapshot,
         distance_tolerance_rel=distance_tolerance_rel,
+        output_dir=output_dir
     )
 
     if cluster_id not in results:
