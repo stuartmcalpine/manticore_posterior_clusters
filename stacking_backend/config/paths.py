@@ -9,8 +9,8 @@ class DataPaths:
     """Configurable data paths"""
     
     # Default paths - can be overridden by environment variables
-    pr4_y_map: str = "Chandran_compy/PR4_NILC_y_map.fits"
-    pr4_masks: str = "Chandran_compy/Masks.fits"
+    pr4_y_map: str = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/posterior_associations/notebooks/Chandran_compy/PR4_NILC_y_map.fits"
+    pr4_masks: str = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/posterior_associations/notebooks/Chandran_compy/Masks.fits"
     mcxc_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/observational_data/mcxc_2_clusters/mcxc_clusters.hdf5"
     erosita_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/observational_data/erosita_clusters/erosita_clusters.hdf5"
     manticore_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/temp/output/simplified_clusters.h5"
