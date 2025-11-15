@@ -62,8 +62,8 @@ class SummaryPlotter:
             # Center and apertures
             ax.plot(0, 0, 'k+', markersize=10, markeredgewidth=2)
             
-            inner_radius = results.get('r200_median', 0) * results.get('inner_r200_factor', 1)
-            outer_radius = results.get('r200_median', 0) * results.get('outer_r200_factor', 3)
+            inner_radius = results.get('r500_median', 0) * results.get('inner_r500_factor', 1)
+            outer_radius = results.get('r500_median', 0) * results.get('outer_r500_factor', 3)
             
             if inner_radius and outer_radius:
                 PlotUtils.add_circle_apertures(ax, (0, 0), inner_radius, outer_radius)
@@ -110,9 +110,9 @@ class SummaryPlotter:
     • Significance = {results.get('significance', np.nan):.1f}σ
 
     Aperture Details:
-    • R200 median = {results.get('r200_median', np.nan):.3f}°
-    • Inner factor = {results.get('inner_r200_factor', np.nan):.1f}
-    • Outer factor = {results.get('outer_r200_factor', np.nan):.1f}
+    • R500 median = {results.get('r500_median', np.nan):.3f}°
+    • Inner factor = {results.get('inner_r500_factor', np.nan):.1f}
+    • Outer factor = {results.get('outer_r500_factor', np.nan):.1f}
 
     Sample Information:
     • Valid patches = {results.get('n_measurements', 0)}

@@ -22,17 +22,17 @@ class StatisticsCalculator:
         }
     
     @staticmethod
-    def calculate_r200_statistics(r200_values):
-        """Calculate R200 statistics"""
-        r200_values = np.array(r200_values)
+    def calculate_r500_statistics(r500_values):
+        """Calculate R500 statistics"""
+        r500_values = np.array(r500_values)
         
         return {
-            'median': np.median(r200_values),
-            'mean': np.mean(r200_values),
-            'std': np.std(r200_values),
-            'min': np.min(r200_values),
-            'max': np.max(r200_values),
-            'range': (np.min(r200_values), np.max(r200_values))
+            'median': np.median(r500_values),
+            'mean': np.mean(r500_values),
+            'std': np.std(r500_values),
+            'min': np.min(r500_values),
+            'max': np.max(r500_values),
+            'range': (np.min(r500_values), np.max(r500_values))
         }
     
     @staticmethod

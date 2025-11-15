@@ -56,10 +56,10 @@ coord_list = [
 ]
 
 # Run analysis with validation
-results = pipeline.run_individual_r200_analysis_with_validation(
+results = pipeline.run_individual_r500_analysis_with_validation(
     coord_list=coord_list,
-    inner_r200_factor=1.0,  # Inner aperture at 1×R₅₀₀
-    outer_r200_factor=3.0,  # Outer aperture at 3×R₅₀₀
+    inner_r500_factor=1.0,  # Inner aperture at 1×R₅₀₀
+    outer_r500_factor=3.0,  # Outer aperture at 3×R₅₀₀
     patch_size_deg=15.0,     # Patch size in degrees
     npix=256,                # Pixels per patch
     n_bootstrap=500,         # Bootstrap samples
@@ -152,7 +152,7 @@ The pipeline returns a comprehensive results dictionary:
     'stacked_patch': np.array,          # 2D stacked y-map
     'profile_radii': np.array,          # Radial bin centers
     'profile_mean': np.array,           # Radial profile values
-    'r200_median': float,               # Median R₂₀₀ of sample
+    'r500_median': float,               # Median R₂₀₀ of sample
     'n_measurements': int,              # Valid clusters analyzed
     'rejection_stats': dict,            # Rejection reason counts
 }
@@ -178,8 +178,8 @@ params = AnalysisParameters.for_mass_scaling()
 params = AnalysisParameters(
     patch_size_deg=20.0,
     npix=512,
-    inner_r200_factor=0.5,
-    outer_r200_factor=2.0,
+    inner_r500_factor=0.5,
+    outer_r500_factor=2.0,
     n_bootstrap=1000,
     n_random_pointings=1000,
     min_coverage=0.8

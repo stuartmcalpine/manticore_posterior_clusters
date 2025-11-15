@@ -3,16 +3,16 @@ import numpy as np
 from .photometry import AperturePhotometry
 
 class IndividualClusterAnalyzer:
-    """Analyze individual clusters using their own R200 values"""
+    """Analyze individual clusters using their own R500 values"""
     
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
     
-    def calculate_measurements(self, coord_list, inner_r200_factor=1.0, outer_r200_factor=3.0,
+    def calculate_measurements(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                              patch_size_deg=15.0, npix=256, min_coverage=0.9):
-        """Calculate individual cluster measurements using their own R200 values"""
+        """Calculate individual cluster measurements using their own R500 values"""
         
-        print(f"🔍 Calculating individual cluster measurements with individual R200...")
+        print(f"🔍 Calculating individual cluster measurements with individual R500...")
         
         individual_results = []
         rejection_stats = {
@@ -23,10 +23,10 @@ class IndividualClusterAnalyzer:
         
         for i, coords in enumerate(coord_list):
             try:
-                # Extract coordinates and R500 (assuming r500 is provided as 3rd element)
+                # Extract coordinates and R500
                 lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
                 
-                # Extract patch for this cluster
+                # Extract patch for this cluster using observed coordinates
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
                     center_coords=(lon_gal, lat_gal),
                     patch_size_deg=patch_size_deg,
@@ -38,12 +38,12 @@ class IndividualClusterAnalyzer:
                 
                 # Perform aperture photometry with this cluster's R500
                 dummy_mask = np.isfinite(patch_data)
-                aperture_result, aperture_diagnostics = AperturePhotometry.calculate_individual_r200_photometry(
+                aperture_result, aperture_diagnostics = AperturePhotometry.calculate_individual_r500_photometry(
                     patch=patch_data,
                     mask_patch=dummy_mask,
-                    r200_deg=r500_deg,  # Using R500 value
-                    inner_r200_factor=inner_r200_factor,
-                    outer_r200_factor=outer_r200_factor,
+                    r500_deg=r500_deg,  # Using R500 value directly
+                    inner_r500_factor=inner_r500_factor,
+                    outer_r500_factor=outer_r500_factor,
                     patch_size_deg=patch_size_deg,
                     npix=npix,
                     min_coverage=min_coverage

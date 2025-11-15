@@ -6,52 +6,61 @@ from .plot_utils import PlotUtils
 
 class BasicPlotter:
     """Basic plotting functionality for patches and profiles"""
-    
+
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
-    
-    def plot_patch(self, ra, dec, patch_size_deg=10.0, npix=256, 
-                   title=None, cmap='RdBu_r', percentile_range=(5, 95),
+
+    def plot_patch(self, ra, dec, patch_size_deg=10.0, npix=256,
+                   title=None, cmap='RdBu_r', vmin=None, vmax=None,
                    show_center=True, show_grid=True):
-        """Plot y-map patch and mask side by side"""
-        
+        """Plot y-map patch and mask side by side
+
+        Returns
+        -------
+        ax1 : matplotlib axis
+            Axis containing the y-map
+        ax2 : matplotlib axis
+            Axis containing the mask
+        patch_data : np.array
+            The extracted patch data
+        mask_patch : np.array
+            The extracted mask data
+        """
+
         # Convert RA/Dec to Galactic coordinates
         coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg, frame='icrs')
         gal_coord = coord.galactic
         gal_lon = gal_coord.l.deg
         gal_lat = gal_coord.b.deg
-        
+
         # Extract patch
         patch_data, mask_patch = self.patch_extractor.extract_patch(
             center_coords=(gal_lon, gal_lat),
             patch_size_deg=patch_size_deg,
             npix=npix
         )
-        
+
         # Create masked version for display
         y_display = patch_data.copy()
         if mask_patch is not None:
             y_display[~mask_patch] = np.nan
-        
-        # Calculate color limits
-        vmin, vmax = PlotUtils.calculate_color_limits(y_display, percentile_range)
-        
+
         # Create dual plot
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3.5))
-        
+
         # Plot extent
         extent = PlotUtils.format_patch_plot(ax1, patch_size_deg, 'Y-Parameter Map', show_grid)
-        PlotUtils.format_patch_plot(ax2, patch_size_deg, 
-                                   f'Mask ({np.mean(mask_patch)*100:.1f}% valid)' if mask_patch is not None else 'Mask (100% valid)', 
+        PlotUtils.format_patch_plot(ax2, patch_size_deg,
+                                   f'Mask ({np.mean(mask_patch)*100:.1f}% valid)' if mask_patch is not None else 'Mask (100% valid)',
                                    show_grid)
-        
+
         # Left plot: Y-map
         im1 = ax1.imshow(y_display, extent=extent, origin='lower',
                         cmap=cmap, vmin=vmin, vmax=vmax, interpolation='nearest')
-        
+
         if show_center:
             ax1.plot(0, 0, 'k+', markersize=12, markeredgewidth=2)
-        
+
         # Right plot: Mask
         if mask_patch is not None:
             im2 = ax2.imshow(mask_patch.astype(float), extent=extent, origin='lower',
@@ -59,26 +68,26 @@ class BasicPlotter:
         else:
             im2 = ax2.imshow(np.ones_like(patch_data), extent=extent, origin='lower',
                             cmap='RdYlBu_r', vmin=0, vmax=1, interpolation='nearest')
-        
+
         if show_center:
             ax2.plot(0, 0, 'k+', markersize=12, markeredgewidth=2)
-        
+
         # Colorbars
         cbar1 = plt.colorbar(im1, ax=ax1, shrink=0.8)
         cbar1.set_label('Y-parameter')
         cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8)
         cbar2.set_label('Mask (1=valid, 0=masked)')
-        
+
         # Overall title
         if title is None:
             title = f'RA={ra:.3f}°, Dec={dec:.3f}°'
-        fig.suptitle(title, fontsize=14)
-        
-        plt.tight_layout()
-        plt.show()
-        
-        return fig, (ax1, ax2), patch_data, mask_patch
-    
+        #fig.suptitle(title, fontsize=14)
+
+        #plt.tight_layout()
+        #plt.show()
+
+        return ax1, ax2, patch_data, mask_patch
+
     def plot_stacked_patch(self, stacked_patch, patch_size_deg, title=None,
                           cmap='RdBu_r', percentile_range=(5, 95),
                           show_apertures=True, inner_radius_deg=None, outer_radius_deg=None):

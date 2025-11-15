@@ -14,7 +14,7 @@ class DataPaths:
     mcxc_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/observational_data/mcxc_2_clusters/mcxc_clusters.hdf5"
     erosita_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/observational_data/erosita_clusters/erosita_clusters.hdf5"
     manticore_catalog: str = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/temp/output/simplified_clusters.h5"
-    
+
     def __post_init__(self):
         # Override with environment variables if available
         self.pr4_y_map = os.getenv('PR4_Y_MAP_PATH', self.pr4_y_map)
@@ -22,7 +22,9 @@ class DataPaths:
         self.mcxc_catalog = os.getenv('MCXC_CATALOG_PATH', self.mcxc_catalog)
         self.erosita_catalog = os.getenv('EROSITA_CATALOG_PATH', self.erosita_catalog)
         self.manticore_catalog = os.getenv('MANTICORE_CATALOG_PATH', self.manticore_catalog)
-    
+        self.planck_y_map = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/posterior_associations/notebooks/COM_CompMap/COM_CompMap_YSZ_R2.02/milca_ymaps.fits"
+        self.planck_y_mask = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/posterior_associations/notebooks/COM_CompMap/COM_CompMap_YSZ_R2.02/COM_CompMap_Compton-SZMap-masks_2048_R2.01.fits"
+
     def validate_paths(self) -> dict:
         """Validate that required paths exist"""
         validation_results = {}

@@ -8,7 +8,7 @@ class NullTestValidator:
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
     
-    def run_null_tests(self, n_random_pointings, coord_list, inner_r200_factor, outer_r200_factor,
+    def run_null_tests(self, n_random_pointings, coord_list, inner_r500_factor, outer_r500_factor,
                       patch_size_deg, npix, min_coverage):
         """Run null tests with mask-bias correction"""
         
@@ -16,7 +16,7 @@ class NullTestValidator:
         
         # First, analyze mask coverage distribution of actual cluster sample
         cluster_coverage_stats = self._analyze_cluster_mask_coverage(
-            coord_list, patch_size_deg, npix, inner_r200_factor, outer_r200_factor
+            coord_list, patch_size_deg, npix, inner_r500_factor, outer_r500_factor
         )
         
         # Generate random pointings with mask-bias correction
@@ -32,7 +32,7 @@ class NullTestValidator:
         
         for i, coords in enumerate(random_coords):
             try:
-                lon_gal, lat_gal, r200_deg = coords[0], coords[1], coords[2]
+                lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
                 
                 # Extract patch
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -46,20 +46,20 @@ class NullTestValidator:
                 
                 # Check if this random pointing has similar masking to cluster sample
                 if not self._validate_mask_similarity(mask_patch, cluster_coverage_stats, 
-                                                    inner_r200_factor, outer_r200_factor, 
-                                                    r200_deg, patch_size_deg, npix):
+                                                    inner_r500_factor, outer_r500_factor, 
+                                                    r500_deg, patch_size_deg, npix):
                     rejection_reasons['mask_mismatch'] += 1
                     rejection_count += 1
                     continue
                 
                 # Perform aperture photometry
                 dummy_mask = np.isfinite(patch_data)
-                result, diagnostics = AperturePhotometry.calculate_individual_r200_photometry(
+                result, diagnostics = AperturePhotometry.calculate_individual_r500_photometry(
                     patch=patch_data,
                     mask_patch=dummy_mask,
-                    r200_deg=r200_deg,
-                    inner_r200_factor=inner_r200_factor,
-                    outer_r200_factor=outer_r200_factor,
+                    r500_deg=r500_deg,
+                    inner_r500_factor=inner_r500_factor,
+                    outer_r500_factor=outer_r500_factor,
                     patch_size_deg=patch_size_deg,
                     npix=npix,
                     min_coverage=min_coverage
@@ -107,7 +107,7 @@ class NullTestValidator:
         }
     
     def _analyze_cluster_mask_coverage(self, coord_list, patch_size_deg, npix, 
-                                     inner_r200_factor, outer_r200_factor):
+                                     inner_r500_factor, outer_r500_factor):
         """Analyze mask coverage statistics of actual cluster sample"""
         
         print(f"   📊 Analyzing mask coverage of {len(coord_list)} clusters...")
@@ -116,12 +116,12 @@ class NullTestValidator:
             'inner_coverages': [],
             'outer_coverages': [],
             'total_coverages': [],
-            'r200_values': []
+            'r500_values': []
         }
         
         for coords in coord_list:
             try:
-                lon_gal, lat_gal, r200_deg = coords[0], coords[1], coords[2]
+                lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
                 
                 # Extract patch
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -134,8 +134,8 @@ class NullTestValidator:
                     # Calculate aperture coverages
                     inner_mask, outer_mask = AperturePhotometry.create_aperture_masks(
                         patch_size_deg, npix, 
-                        inner_r200_factor * r200_deg, 
-                        outer_r200_factor * r200_deg
+                        inner_r500_factor * r500_deg, 
+                        outer_r500_factor * r500_deg
                     )
                     
                     inner_coverage = np.sum(inner_mask & mask_patch) / np.sum(inner_mask)
@@ -145,19 +145,19 @@ class NullTestValidator:
                     coverage_stats['inner_coverages'].append(inner_coverage)
                     coverage_stats['outer_coverages'].append(outer_coverage)
                     coverage_stats['total_coverages'].append(total_coverage)
-                    coverage_stats['r200_values'].append(r200_deg)
+                    coverage_stats['r500_values'].append(r500_deg)
                     
             except Exception:
                 continue
         
         # Convert to arrays and calculate statistics
-        for key in ['inner_coverages', 'outer_coverages', 'total_coverages', 'r200_values']:
+        for key in ['inner_coverages', 'outer_coverages', 'total_coverages', 'r500_values']:
             coverage_stats[key] = np.array(coverage_stats[key])
         
         coverage_stats['median_inner_coverage'] = np.median(coverage_stats['inner_coverages'])
         coverage_stats['median_outer_coverage'] = np.median(coverage_stats['outer_coverages'])
         coverage_stats['median_total_coverage'] = np.median(coverage_stats['total_coverages'])
-        coverage_stats['median_r200'] = np.median(coverage_stats['r200_values'])
+        coverage_stats['median_r500'] = np.median(coverage_stats['r500_values'])
         
         print(f"      Median inner coverage: {coverage_stats['median_inner_coverage']:.2f}")
         print(f"      Median outer coverage: {coverage_stats['median_outer_coverage']:.2f}")
@@ -193,8 +193,8 @@ class NullTestValidator:
             lon_gal = np.random.uniform(0, 360)
             lat_gal = np.random.uniform(lat_range[0], lat_range[1])
             
-            # Use median R200 from cluster sample
-            median_r200 = cluster_coverage_stats['median_r200']
+            # Use median R500 from cluster sample
+            median_r500 = cluster_coverage_stats['median_r500']
             
             # Check distance from all clusters
             position = np.array([lon_gal, lat_gal])
@@ -220,7 +220,7 @@ class NullTestValidator:
                     # Accept if coverage is within reasonable range of cluster sample
                     coverage_tolerance = 0.2  # ±20% tolerance
                     if abs(test_coverage - target_coverage) < coverage_tolerance:
-                        random_coords.append([lon_gal, lat_gal, median_r200])
+                        random_coords.append([lon_gal, lat_gal, median_r500])
                     
             except Exception:
                 pass
@@ -233,7 +233,7 @@ class NullTestValidator:
         return random_coords
     
     def _validate_mask_similarity(self, mask_patch, cluster_coverage_stats, 
-                                inner_r200_factor, outer_r200_factor, r200_deg, 
+                                inner_r500_factor, outer_r500_factor, r500_deg, 
                                 patch_size_deg, npix):
         """Validate that random pointing has similar mask characteristics to cluster sample"""
         
@@ -244,8 +244,8 @@ class NullTestValidator:
             # Calculate aperture coverages for this random pointing
             inner_mask, outer_mask = AperturePhotometry.create_aperture_masks(
                 patch_size_deg, npix,
-                inner_r200_factor * r200_deg,
-                outer_r200_factor * r200_deg
+                inner_r500_factor * r500_deg,
+                outer_r500_factor * r500_deg
             )
             
             inner_coverage = np.sum(inner_mask & mask_patch) / np.sum(inner_mask)

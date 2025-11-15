@@ -11,8 +11,8 @@ class AnalysisParameters:
     npix: int = 256
     
     # Aperture photometry parameters
-    inner_r200_factor: float = 1.0
-    outer_r200_factor: float = 3.0
+    inner_r500_factor: float = 1.0
+    outer_r500_factor: float = 3.0
     min_coverage: float = 0.9
     
     # Stacking parameters
@@ -40,7 +40,7 @@ class AnalysisParameters:
     exclusion_radius_factor: float = 3.0
     
     # Coordinate validation parameters
-    max_reasonable_r200_deg: float = 10.0
+    max_reasonable_r500_deg: float = 10.0
     max_reasonable_redshift: float = 3.0
     min_galactic_latitude: float = 10.0  # Avoid galactic plane
     
@@ -59,11 +59,11 @@ class AnalysisParameters:
             raise ValueError(f"npix must be positive, got {self.npix}")
         
         # Aperture parameters
-        if self.inner_r200_factor <= 0:
-            raise ValueError(f"inner_r200_factor must be positive, got {self.inner_r200_factor}")
+        if self.inner_r500_factor <= 0:
+            raise ValueError(f"inner_r500_factor must be positive, got {self.inner_r500_factor}")
         
-        if self.outer_r200_factor <= self.inner_r200_factor:
-            raise ValueError(f"outer_r200_factor must be > inner_r200_factor")
+        if self.outer_r500_factor <= self.inner_r500_factor:
+            raise ValueError(f"outer_r500_factor must be > inner_r500_factor")
         
         if not 0 < self.min_coverage <= 1:
             raise ValueError(f"min_coverage must be in (0, 1], got {self.min_coverage}")
@@ -86,8 +86,8 @@ class AnalysisParameters:
         return cls(
             patch_size_deg=20.0,
             npix=256,
-            inner_r200_factor=1.0,
-            outer_r200_factor=3.0,
+            inner_r500_factor=1.0,
+            outer_r500_factor=3.0,
             min_coverage=0.8,
             n_radial_bins=30,
             n_bootstrap=1000,

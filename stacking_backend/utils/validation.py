@@ -31,11 +31,11 @@ class InputValidator:
             if not (-90 <= coords[1] <= 90):
                 raise ValueError(f"Coordinate {i} latitude out of range [-90, 90]: {coords[1]}")
             
-            if len(coords) >= 3:  # Has R200
+            if len(coords) >= 3:  # Has R500
                 if coords[2] <= 0:
-                    raise ValueError(f"Coordinate {i} has non-positive R200: {coords[2]}")
-                if coords[2] > 10:  # Sanity check - R200 > 10 degrees is very large
-                    print(f"Warning: Coordinate {i} has very large R200: {coords[2]}°")
+                    raise ValueError(f"Coordinate {i} has non-positive R500: {coords[2]}")
+                if coords[2] > 10:  # Sanity check - R500 > 10 degrees is very large
+                    print(f"Warning: Coordinate {i} has very large R500: {coords[2]}°")
             
             if len(coords) >= 4:  # Has redshift
                 if coords[3] < 0:
@@ -44,8 +44,8 @@ class InputValidator:
                     print(f"Warning: Coordinate {i} has very high redshift: {coords[3]}")
     
     @staticmethod
-    def validate_analysis_params(patch_size_deg: float, npix: int, inner_r200_factor: float, 
-                               outer_r200_factor: float, min_coverage: float) -> None:
+    def validate_analysis_params(patch_size_deg: float, npix: int, inner_r500_factor: float, 
+                               outer_r500_factor: float, min_coverage: float) -> None:
         """Validate analysis parameters with detailed checks"""
         
         # Patch size validation
@@ -64,16 +64,16 @@ class InputValidator:
         if npix > 2048:
             print(f"Warning: npix is very large ({npix}), may cause memory issues")
         
-        # R200 factor validation
-        if not isinstance(inner_r200_factor, (int, float)):
-            raise TypeError(f"inner_r200_factor must be numeric, got {type(inner_r200_factor)}")
-        if inner_r200_factor <= 0:
-            raise ValueError(f"inner_r200_factor must be positive, got {inner_r200_factor}")
+        # R500 factor validation
+        if not isinstance(inner_r500_factor, (int, float)):
+            raise TypeError(f"inner_r500_factor must be numeric, got {type(inner_r500_factor)}")
+        if inner_r500_factor <= 0:
+            raise ValueError(f"inner_r500_factor must be positive, got {inner_r500_factor}")
         
-        if not isinstance(outer_r200_factor, (int, float)):
-            raise TypeError(f"outer_r200_factor must be numeric, got {type(outer_r200_factor)}")
-        if outer_r200_factor <= inner_r200_factor:
-            raise ValueError(f"outer_r200_factor ({outer_r200_factor}) must be greater than inner_r200_factor ({inner_r200_factor})")
+        if not isinstance(outer_r500_factor, (int, float)):
+            raise TypeError(f"outer_r500_factor must be numeric, got {type(outer_r500_factor)}")
+        if outer_r500_factor <= inner_r500_factor:
+            raise ValueError(f"outer_r500_factor ({outer_r500_factor}) must be greater than inner_r500_factor ({inner_r500_factor})")
         
         # Coverage validation
         if not isinstance(min_coverage, (int, float)):
