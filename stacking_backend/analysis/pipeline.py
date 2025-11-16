@@ -1,8 +1,8 @@
-# stacking_backend/analysis/pipeline.py
+   # stacking_backend/analysis/pipeline.py
 import numpy as np
 from astropy.cosmology import Planck18
-from ..data import load_pr4_data, PatchExtractor
-from ..config.paths import DataPaths
+from ..data import GenericMapLoader, PatchExtractor
+from ..config.map_config import MapConfig
 from ..utils.validation import InputValidator
 from ..utils.statistics import StatisticsCalculator
 from .stacking import PatchStacker
@@ -14,25 +14,46 @@ import threading
 class ClusterAnalysisPipeline:
     """Main analysis pipeline for cluster stacking analysis with validation"""
     
-    def __init__(self, data_paths=None):
-        self.data_paths = data_paths or DataPaths.get_default()
+    def __init__(self, map_config=None):
+        """
+        Initialize the analysis pipeline
+        
+        Parameters
+        ----------
+        map_config : MapConfig, optional
+            Configuration for map loading. If None, will use default PR4 configuration
+        """
+        if map_config is None:
+            # Default to PR4 configuration for backward compatibility
+            # User should provide proper paths when creating MapConfig
+            raise ValueError("MapConfig is required. Please provide a MapConfig object.")
+        
+        self.map_config = map_config
         self._lock = threading.Lock()
         self._initialize_data()
     
     def _initialize_data(self):
-        """Load PR4 data and initialize components with error handling"""
+        """Load map data using MapConfig and initialize components with error handling"""
         try:
-            data = load_pr4_data(self.data_paths)
+            # Use GenericMapLoader with the provided MapConfig
+            loader = GenericMapLoader(self.map_config)
+            data = loader.load_data(use_cache=True)
             
+            # Initialize PatchExtractor with loaded data
             self.patch_extractor = PatchExtractor(
-                y_map=data["y_map"],
-                combined_mask=data["combined_mask"],
-                nside=data["nside"]
+                y_map=data["map"],  # or data["y_map"] for backward compatibility
+                combined_mask=data.get("combined_mask"),
+                nside=data["nside"],
+                nested=data.get("nested", False),
+                coord_system=data.get("coord_system", "G")
             )
             
+            # Initialize analysis components
             self.stacker = PatchStacker(self.patch_extractor)
             self.individual_analyzer = IndividualClusterAnalyzer(self.patch_extractor)
             self.validator = NullTestValidator(self.patch_extractor)
+            
+            print(f"✅ Pipeline initialized with {self.map_config.map_format.value} format map")
             
         except Exception as e:
             raise RuntimeError(f"Failed to initialize analysis pipeline: {str(e)}") from e
