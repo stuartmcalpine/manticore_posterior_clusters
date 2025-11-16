@@ -107,3 +107,21 @@ class MapConfig:
             calibration_factor=calibration,
             remove_monopole=True
         )
+
+    @classmethod
+    def for_planck_cmb_smica(cls, cmb_map_path: str, mask_path: Optional[str] = None):
+        """Preset for Planck CMB temperature maps (SMICA/NILC) for kSZ analysis"""
+        return cls(
+            map_path=cmb_map_path,
+            mask_path=mask_path,
+            map_format=MapFormat.HEALPIX,
+            map_column=None,  # CMB maps typically don't use columns
+            mask_columns=None,
+            mask_combine_method="SINGLE",
+            nside=2048,
+            coord_system="G",
+            calibration_factor=1e6,  # Convert K to µK if needed
+            remove_monopole=False,  # Keep CMB fluctuations for kSZ
+            remove_dipole=True  # Remove any residual dipole
+        )
+

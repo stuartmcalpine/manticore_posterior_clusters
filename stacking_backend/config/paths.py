@@ -13,6 +13,11 @@ class DataPaths:
     erosita_catalog: Optional[str] = "/cosma7/data/dp004/rttw52/Manticore/observational_data/erosita_clusters/erosita_clusters.hdf5"
     manticore_catalog: Optional[str] = "/cosma7/data/dp004/rttw52/Manticore/new_analysis/clusters/temp/output/simplified_clusters.h5"
 
+    # CMB temperature maps for kSZ
+    planck_cmb_map: Optional[str] = None  # Path to COM_CMB_IQU-smica_2048_R3.00_full.fits
+    planck_cmb_mask: Optional[str] = None  # Optional CMB mask
+    remove_cmb_dipole: bool = False  # Whether to remove residual dipole
+
     # Add any other non-map related paths here
     output_dir: Optional[str] = None
     temp_dir: Optional[str] = None
