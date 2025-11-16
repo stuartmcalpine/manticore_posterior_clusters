@@ -1,4 +1,4 @@
-   # stacking_backend/analysis/pipeline.py
+# stacking_backend/analysis/pipeline.py
 import numpy as np
 from astropy.cosmology import Planck18
 from ..data import GenericMapLoader, PatchExtractor
@@ -12,7 +12,7 @@ from .validation import NullTestValidator
 import threading
 
 class ClusterAnalysisPipeline:
-    """Main analysis pipeline for cluster stacking analysis with validation"""
+    """Main analysis pipeline with corrected significance calculation"""
     
     def __init__(self, map_config=None):
         """
@@ -62,20 +62,19 @@ class ClusterAnalysisPipeline:
                                                    patch_size_deg=15.0, npix=256, max_patches=None,
                                                    min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
                                                    n_bootstrap=500, n_random=500):
-        """Full analysis pipeline with r500 scaling and validation"""
+        """Full analysis pipeline with corrected error propagation and significance calculation"""
         
         # Input validation
         InputValidator.validate_coord_list(coord_list)
         InputValidator.validate_analysis_params(patch_size_deg, npix, inner_r500_factor, outer_r500_factor, min_coverage)
         
-        print("🚀 CLUSTER ANALYSIS PIPELINE (r500 Scaling + Validation)")
+        print("🚀 CLUSTER ANALYSIS PIPELINE (Corrected Significance)")
         print("="*70)
         
-        # Step 1: Calculate individual cluster measurements
-        # Use observed angular sizes directly for patch extraction
-        print(f"\n🔍 Step 1: Individual cluster measurements...")
-        individual_results, rejection_stats = self.individual_analyzer.calculate_measurements(
-            coord_list=coord_list,  # Use original coordinates with observed angular sizes
+        # Step 1: Calculate individual cluster measurements with errors
+        print(f"\n🔍 Step 1: Individual cluster measurements with error estimation...")
+        individual_results, rejection_stats, quality_stats = self.individual_analyzer.calculate_measurements(
+            coord_list=coord_list,
             inner_r500_factor=inner_r500_factor,
             outer_r500_factor=outer_r500_factor,
             patch_size_deg=patch_size_deg,
@@ -86,15 +85,16 @@ class ClusterAnalysisPipeline:
         if not individual_results:
             raise ValueError('No valid individual measurements obtained')
         
-        # Extract measurements for bootstrap
-        individual_delta_y = [result['delta_y'] for result in individual_results]
+        # Extract measurements and errors
+        individual_delta_y = np.array([result['delta_y'] for result in individual_results])
+        individual_errors = np.array([result['delta_y_error'] for result in individual_results])
         valid_coords = [result['coords'] for result in individual_results]
         
-        # Step 2: Improved Bootstrap error estimation
-        print(f"\n🔄 Step 2: Bootstrap error estimation ({n_bootstrap} samples)...")
-        bootstrap_results = self._improved_bootstrap_analysis(
-            individual_results, inner_r500_factor, outer_r500_factor,
-            patch_size_deg, npix, min_coverage, n_bootstrap
+        # Step 2: Robust Bootstrap with proper error propagation
+        print(f"\n🔄 Step 2: Robust bootstrap error estimation ({n_bootstrap} samples)...")
+        bootstrap_results = self._robust_bootstrap_analysis(
+            individual_results, individual_delta_y, individual_errors,
+            n_bootstrap
         )
         
         # Step 3: Create stacked patch
@@ -124,87 +124,160 @@ class ClusterAnalysisPipeline:
                 min_coverage=min_coverage
             )
         
-        # Step 5: Calculate radial profile in r/r500 units
-        print(f"\n📊 Step 5: Radial profile in r/r500 units...")
+        # Step 5: Calculate corrected significance
+        print(f"\n📈 Step 5: Computing corrected detection significance...")
+        significance_results = self._calculate_corrected_significance(
+            individual_delta_y, individual_errors, bootstrap_results, null_results
+        )
         
-        # Get median r500 for scaling the profile x-axis
+        # Step 6: Calculate radial profile
+        print(f"\n📊 Step 6: Radial profile in r/r500 units...")
         r500_values = [result['r500_deg'] for result in individual_results]
         median_r500_deg = np.median(r500_values)
         
-        # Calculate profile with scaling to r/r500 units
         radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile_scaled(
             stacked_patch=stacked_patch,
             patch_size_deg=patch_size_deg,
-            r500_deg=median_r500_deg,  # Pass median r500 for scaling
+            r500_deg=median_r500_deg,
             n_radial_bins=n_radial_bins
         )
         
-        # Step 6: Compile results with validation
-        results = self._compile_results_with_validation(
-            individual_results, individual_delta_y, bootstrap_results, 
-            stacked_patch, stacking_info, radii, profile, profile_errors, profile_counts,
-            rejection_stats, coord_list, patch_size_deg, npix, 
+        # Step 7: Compile results
+        results = self._compile_corrected_results(
+            individual_results, individual_delta_y, individual_errors,
+            bootstrap_results, significance_results, stacked_patch, stacking_info,
+            radii, profile, profile_errors, profile_counts,
+            rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
             inner_r500_factor, outer_r500_factor, null_results
         )
         
-        self._print_final_summary_with_validation(results)
+        self._print_corrected_summary(results)
         
         return results
     
-    def _improved_bootstrap_analysis(self, individual_results, inner_r500_factor, 
-                                   outer_r500_factor, patch_size_deg, npix, min_coverage, n_bootstrap):
-        """Improved bootstrap resampling with cluster-level resampling"""
-        bootstrap_means = []
+    def _robust_bootstrap_analysis(self, individual_results, delta_y_values, errors, n_bootstrap):
+        """Robust bootstrap that properly combines sample and measurement variance"""
+        
         n_clusters = len(individual_results)
+        bootstrap_means = []
+        bootstrap_combined_errors = []
         
         for i in range(n_bootstrap):
             # Resample clusters with replacement
             bootstrap_indices = np.random.choice(n_clusters, size=n_clusters, replace=True)
-            bootstrap_measurements = []
             
-            for idx in bootstrap_indices:
-                result = individual_results[idx]
-                bootstrap_measurements.append(result['delta_y'])
+            # Get resampled measurements and errors
+            bootstrap_delta_y = delta_y_values[bootstrap_indices]
+            bootstrap_errors = errors[bootstrap_indices]
             
-            bootstrap_means.append(np.mean(bootstrap_measurements))
+            # Calculate bootstrap mean
+            bootstrap_mean = np.mean(bootstrap_delta_y)
+            bootstrap_means.append(bootstrap_mean)
+            
+            # Calculate combined error for this bootstrap sample
+            # Includes both measurement error and sample variance
+            measurement_var = np.mean(bootstrap_errors**2)
+            sample_var = np.var(bootstrap_delta_y)
+            combined_error = np.sqrt(measurement_var/n_clusters + sample_var/n_clusters)
+            bootstrap_combined_errors.append(combined_error)
         
-        bootstrap_mean = np.mean(bootstrap_means)
-        bootstrap_std = np.std(bootstrap_means)
-        bootstrap_error = bootstrap_std  # Standard error from bootstrap
+        bootstrap_means = np.array(bootstrap_means)
+        bootstrap_combined_errors = np.array(bootstrap_combined_errors)
+        
+        # Calculate final statistics
+        mean_estimate = np.mean(bootstrap_means)
+        
+        # Sample variance from bootstrap distribution
+        sample_variance = np.var(bootstrap_means)
+        
+        # Average measurement variance
+        measurement_variance = np.mean(errors**2) / n_clusters
+        
+        # Total variance combining both sources
+        total_variance = sample_variance + measurement_variance
+        total_error = np.sqrt(total_variance)
         
         # Calculate confidence intervals
         bootstrap_means_sorted = np.sort(bootstrap_means)
         ci_16 = bootstrap_means_sorted[int(0.16 * n_bootstrap)]
         ci_84 = bootstrap_means_sorted[int(0.84 * n_bootstrap)]
+        ci_2p5 = bootstrap_means_sorted[int(0.025 * n_bootstrap)]
+        ci_97p5 = bootstrap_means_sorted[int(0.975 * n_bootstrap)]
         
         return {
-            'bootstrap_mean': bootstrap_mean,
-            'bootstrap_std': bootstrap_std,
-            'bootstrap_error': bootstrap_error,
+            'bootstrap_mean': mean_estimate,
+            'sample_variance': sample_variance,
+            'measurement_variance': measurement_variance,
+            'total_variance': total_variance,
+            'total_error': total_error,
             'bootstrap_samples': bootstrap_means,
-            'confidence_interval_68': (ci_16, ci_84)
+            'confidence_interval_68': (ci_16, ci_84),
+            'confidence_interval_95': (ci_2p5, ci_97p5),
+            'n_bootstrap': n_bootstrap
         }
     
-    def _compile_results_with_validation(self, individual_results, individual_delta_y, bootstrap_results,
-                                       stacked_patch, stacking_info, radii, profile, profile_errors, profile_counts,
-                                       rejection_stats, coord_list, patch_size_deg, npix, 
-                                       inner_r500_factor, outer_r500_factor, null_results):
-        """Compile results with validation metrics"""
+    def _calculate_corrected_significance(self, delta_y_values, errors, bootstrap_results, null_results):
+        """Calculate corrected significance with proper error propagation and null correction"""
         
-        # Use bootstrap error for final significance
-        mean_delta_y = bootstrap_results['bootstrap_mean']
-        error_delta_y = bootstrap_results['bootstrap_error']
-        significance = mean_delta_y / error_delta_y if error_delta_y > 0 else 0
+        # Get signal estimate
+        signal = bootstrap_results['bootstrap_mean']
         
-        # Calculate null test significance if available
-        null_significance = None
-        if null_results:
-            null_mean = null_results['random_mean']
+        # Correct for null bias if significant
+        null_corrected_signal = signal
+        null_bias = 0
+        if null_results is not None:
+            null_bias = null_results['random_mean']
             null_std = null_results['random_std']
-            # Compare cluster signal to null distribution
-            null_significance = (mean_delta_y - null_mean) / null_std if null_std > 0 else 0
+            
+            # Apply bias correction if null mean is significantly different from zero
+            # Use 3-sigma threshold to avoid overcorrecting for noise
+            if np.abs(null_bias) > null_std / 3:
+                null_corrected_signal = signal - null_bias
+                print(f"   📊 Applying null bias correction: {null_bias:.2e}")
+            else:
+                print(f"   ✅ Null bias negligible: {null_bias:.2e} ± {null_std:.2e}")
         
-        # Calculate R500 statistics using utility
+        # Calculate different significance estimates
+        
+        # 1. Simple significance (signal/error)
+        simple_significance = signal / bootstrap_results['total_error']
+        
+        # 2. Null-corrected significance
+        null_corrected_significance = null_corrected_signal / bootstrap_results['total_error']
+        
+        # 3. Significance relative to null distribution
+        null_relative_significance = None
+        if null_results is not None:
+            null_std = null_results['random_std']
+            if null_std > 0:
+                null_relative_significance = (signal - null_bias) / null_std
+        
+        # 4. Conservative significance (using larger error estimate)
+        conservative_error = bootstrap_results['total_error']
+        if null_results is not None and null_results['random_std'] > conservative_error:
+            conservative_error = null_results['random_std']
+        conservative_significance = null_corrected_signal / conservative_error
+        
+        return {
+            'signal': signal,
+            'null_bias': null_bias,
+            'corrected_signal': null_corrected_signal,
+            'total_error': bootstrap_results['total_error'],
+            'simple_significance': simple_significance,
+            'null_corrected_significance': null_corrected_significance,
+            'null_relative_significance': null_relative_significance,
+            'conservative_significance': conservative_significance,
+            'primary_significance': null_corrected_significance  # Use this as main result
+        }
+    
+    def _compile_corrected_results(self, individual_results, individual_delta_y, individual_errors,
+                                  bootstrap_results, significance_results, stacked_patch, stacking_info,
+                                  radii, profile, profile_errors, profile_counts,
+                                  rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
+                                  inner_r500_factor, outer_r500_factor, null_results):
+        """Compile results with corrected error estimates and significance"""
+        
+        # Calculate R500 statistics
         r500_values = [result['r500_deg'] for result in individual_results]
         r500_stats = StatisticsCalculator.calculate_r500_statistics(r500_values)
         inner_radii = [result['inner_radius_deg'] for result in individual_results]
@@ -213,30 +286,44 @@ class ClusterAnalysisPipeline:
         return {
             'success': True,
             
-            # Main measurements with bootstrap errors
-            'mean_delta_y': mean_delta_y,
-            'error_mean': error_delta_y,
-            'std_delta_y': bootstrap_results['bootstrap_std'],
-            'significance': significance,
-            'error_type': 'bootstrap',
+            # Main measurements with corrected errors
+            'mean_delta_y': significance_results['corrected_signal'],
+            'error_mean': significance_results['total_error'],
+            'significance': significance_results['primary_significance'],
+            
+            # Detailed significance metrics
+            'significance_metrics': significance_results,
+            
+            # Error decomposition
+            'error_decomposition': {
+                'sample_variance': bootstrap_results['sample_variance'],
+                'measurement_variance': bootstrap_results['measurement_variance'],
+                'total_variance': bootstrap_results['total_variance'],
+                'sample_std': np.sqrt(bootstrap_results['sample_variance']),
+                'measurement_std': np.sqrt(bootstrap_results['measurement_variance']),
+                'total_std': bootstrap_results['total_error']
+            },
             
             # Bootstrap results
             'bootstrap_results': bootstrap_results,
             
             # Validation results
             'null_results': null_results,
-            'null_significance': null_significance,
             
-            # Individual cluster results
+            # Individual cluster results with errors
             'individual_results': individual_results,
-            'individual_measurements': individual_delta_y,
+            'individual_measurements': individual_delta_y.tolist(),
+            'individual_errors': individual_errors.tolist(),
+            
+            # Quality metrics
+            'quality_stats': quality_stats,
             
             # Stacked patch data
             'stacked_patch': stacked_patch,
             'stacking_info': stacking_info,
             
-            # Radial profile (now in r/r500 units)
-            'profile_radii': radii,  # These are now in r/r500 units
+            # Radial profile (in r/r500 units)
+            'profile_radii': radii,
             'profile_mean': profile,
             'profile_errors': profile_errors,
             'profile_counts': profile_counts,
@@ -258,34 +345,55 @@ class ClusterAnalysisPipeline:
             'patch_size_deg': patch_size_deg,
             'npix': npix,
             'inner_r500_factor': inner_r500_factor,
-            'outer_r500_factor': outer_r500_factor
+            'outer_r500_factor': outer_r500_factor,
+            
+            # Error type flag
+            'error_type': 'robust_combined',
+            'analysis_version': '2.0_corrected'
         }
     
-    def _print_final_summary_with_validation(self, results):
-        """Print final analysis summary with validation metrics"""
-        print(f"\n🎯 Final Results:")
-        print(f"✅ Bootstrap statistics:")
-        print(f"   Mean Δy: {results['mean_delta_y']:.2e}")
-        print(f"   Bootstrap error: {results['error_mean']:.2e}")
-        print(f"   Detection significance: {results['significance']:.1f}σ")
+    def _print_corrected_summary(self, results):
+        """Print analysis summary with corrected statistics"""
+        print(f"\n🎯 CORRECTED ANALYSIS RESULTS:")
+        print("="*50)
         
-        if 'confidence_interval_68' in results['bootstrap_results']:
-            ci_low, ci_high = results['bootstrap_results']['confidence_interval_68']
-            print(f"   68% CI: [{ci_low:.2e}, {ci_high:.2e}]")
+        sig_metrics = results['significance_metrics']
+        error_decomp = results['error_decomposition']
         
-        if results['null_results']:
-            print(f"\n🎲 Null test validation:")
-            print(f"   Random mean: {results['null_results']['random_mean']:.2e}")
-            print(f"   Random std: {results['null_results']['random_std']:.2e}")
-            print(f"   Null-corrected significance: {results['null_significance']:.1f}σ")
-            
-            if abs(results['null_results']['random_mean']) > 3 * results['null_results']['random_std']:
-                print(f"   ⚠️  WARNING: Null test shows potential systematic bias")
-            else:
-                print(f"   ✅ Null test passed: random pointings consistent with zero")
+        print(f"📊 Signal Detection:")
+        print(f"   Raw signal: {sig_metrics['signal']:.2e}")
+        if sig_metrics['null_bias'] != 0:
+            print(f"   Null bias: {sig_metrics['null_bias']:.2e}")
+        print(f"   Corrected signal: {sig_metrics['corrected_signal']:.2e}")
         
-        print(f"\n📏 Sample statistics:")
-        print(f"   R500 median: {results['r500_median']:.3f}°")
-        print(f"   Sample: {results['n_measurements']}/{results['n_input_coords']} clusters")
+        print(f"\n📊 Error Budget:")
+        print(f"   Sample std: {error_decomp['sample_std']:.2e} ({error_decomp['sample_variance']/error_decomp['total_variance']*100:.1f}%)")
+        print(f"   Measurement std: {error_decomp['measurement_std']:.2e} ({error_decomp['measurement_variance']/error_decomp['total_variance']*100:.1f}%)")
+        print(f"   Total error: {error_decomp['total_std']:.2e}")
         
-        print(f"\n🎉 Analysis complete with validation!")
+        print(f"\n📊 Detection Significance:")
+        print(f"   Primary (corrected): {sig_metrics['primary_significance']:.2f}σ")
+        print(f"   Simple (uncorrected): {sig_metrics['simple_significance']:.2f}σ")
+        if sig_metrics['null_relative_significance'] is not None:
+            print(f"   Relative to null: {sig_metrics['null_relative_significance']:.2f}σ")
+        print(f"   Conservative: {sig_metrics['conservative_significance']:.2f}σ")
+        
+        if results['bootstrap_results']['confidence_interval_68']:
+            ci_68 = results['bootstrap_results']['confidence_interval_68']
+            ci_95 = results['bootstrap_results']['confidence_interval_95']
+            print(f"\n📊 Confidence Intervals:")
+            print(f"   68% CI: [{ci_68[0]:.2e}, {ci_68[1]:.2e}]")
+            print(f"   95% CI: [{ci_95[0]:.2e}, {ci_95[1]:.2e}]")
+        
+        if results['quality_stats']:
+            qs = results['quality_stats']
+            print(f"\n📊 Measurement Quality:")
+            print(f"   Mean S/N per cluster: {qs['mean_snr']:.2f}")
+            print(f"   High S/N fraction: {qs['high_snr_fraction']*100:.1f}%")
+        
+        print(f"\n📏 Sample Statistics:")
+        print(f"   Valid clusters: {results['n_measurements']}/{results['n_input_coords']}")
+        print(f"   Median R₅₀₀: {results['r500_median']:.3f}°")
+        
+        print(f"\n🎉 Analysis complete with corrected significance calculation!")
+

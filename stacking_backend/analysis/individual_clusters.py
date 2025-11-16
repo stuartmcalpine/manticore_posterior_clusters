@@ -3,16 +3,16 @@ import numpy as np
 from .photometry import AperturePhotometry
 
 class IndividualClusterAnalyzer:
-    """Analyze individual clusters using their own R500 values"""
+    """Analyze individual clusters using their own R500 values with error tracking"""
     
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
     
     def calculate_measurements(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                              patch_size_deg=15.0, npix=256, min_coverage=0.9):
-        """Calculate individual cluster measurements using their own R500 values"""
+        """Calculate individual cluster measurements with error estimation"""
         
-        print(f"🔍 Calculating individual cluster measurements with individual R500...")
+        print(f"🔍 Calculating individual cluster measurements with error estimation...")
         
         individual_results = []
         rejection_stats = {
@@ -36,7 +36,7 @@ class IndividualClusterAnalyzer:
                 if mask_patch is not None:
                     patch_data[~mask_patch] = np.nan
                 
-                # Perform aperture photometry with this cluster's R500
+                # Perform aperture photometry with error estimation
                 dummy_mask = np.isfinite(patch_data)
                 aperture_result, aperture_diagnostics = AperturePhotometry.calculate_individual_r500_photometry(
                     patch=patch_data,
@@ -50,7 +50,7 @@ class IndividualClusterAnalyzer:
                 )
                 
                 if aperture_result is not None:
-                    # Calculate Y500 integration
+                    # Calculate Y500 integration with error
                     y500_result, y500_diagnostics = AperturePhotometry.calculate_y500_integration(
                         patch=patch_data,
                         r500_deg=r500_deg,
@@ -60,10 +60,20 @@ class IndividualClusterAnalyzer:
                     )
                     
                     if y500_result is not None:
-                        # Combine results
+                        # Combine results including error estimates
                         combined_result = {**aperture_result, **y500_result}
                         combined_result['cluster_index'] = i
                         combined_result['coords'] = coords
+                        
+                        # Add measurement quality metrics
+                        combined_result['measurement_quality'] = {
+                            'snr': aperture_result.get('snr', 0),
+                            'inner_coverage': aperture_result.get('inner_coverage', 0),
+                            'outer_coverage': aperture_result.get('outer_coverage', 0),
+                            'n_pixels_total': aperture_result.get('n_inner_valid', 0) + 
+                                            aperture_result.get('n_outer_valid', 0)
+                        }
+                        
                         individual_results.append(combined_result)
                     else:
                         # Y500 calculation failed
@@ -79,10 +89,29 @@ class IndividualClusterAnalyzer:
                 rejection_stats['extraction_error'] += 1
                 continue
         
+        # Calculate statistics on measurement quality
+        if individual_results:
+            snr_values = [r['snr'] for r in individual_results]
+            error_values = [r['delta_y_error'] for r in individual_results]
+            
+            quality_stats = {
+                'mean_snr': np.mean(snr_values),
+                'median_snr': np.median(snr_values),
+                'mean_error': np.mean(error_values),
+                'median_error': np.median(error_values),
+                'high_snr_fraction': np.sum(np.array(snr_values) > 3) / len(snr_values)
+            }
+        else:
+            quality_stats = None
+        
         print(f"   ✅ Calculated {len(individual_results)} valid measurements")
+        if quality_stats:
+            print(f"   📊 Mean S/N: {quality_stats['mean_snr']:.2f}")
+            print(f"   📊 High S/N fraction (>3σ): {quality_stats['high_snr_fraction']*100:.1f}%")
         print(f"   ❌ Rejected: {sum(rejection_stats.values())} clusters")
         for reason, count in rejection_stats.items():
             if count > 0:
                 print(f"      - {reason}: {count}")
         
-        return individual_results, rejection_stats
+        return individual_results, rejection_stats, quality_stats
+

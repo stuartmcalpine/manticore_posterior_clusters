@@ -26,6 +26,7 @@ class NullTestValidator:
         
         # Calculate measurements for random pointings
         random_measurements = []
+        random_errors = []  # Track errors for random measurements too
         rejection_count = 0
         rejection_reasons = {'insufficient_mask_coverage': 0, 'extraction_error': 0, 
                            'insufficient_pixels': 0, 'mask_mismatch': 0}
@@ -52,7 +53,7 @@ class NullTestValidator:
                     rejection_count += 1
                     continue
                 
-                # Perform aperture photometry
+                # Perform aperture photometry with error estimation
                 dummy_mask = np.isfinite(patch_data)
                 result, diagnostics = AperturePhotometry.calculate_individual_r500_photometry(
                     patch=patch_data,
@@ -67,6 +68,9 @@ class NullTestValidator:
                 
                 if result is not None:
                     random_measurements.append(result['delta_y'])
+                    # Track error if available in updated photometry
+                    if 'delta_y_error' in result:
+                        random_errors.append(result['delta_y_error'])
                 else:
                     reason = diagnostics.get('rejection_reason', 'unknown')
                     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
@@ -81,14 +85,24 @@ class NullTestValidator:
             print(f"   ❌ No valid random measurements!")
             return None
         
-        # Calculate null test statistics
+        # Calculate null test statistics with errors if available
         random_mean = np.mean(random_measurements)
         random_std = np.std(random_measurements)
         random_error = random_std / np.sqrt(len(random_measurements))
         
+        # If we have individual errors, use them for more accurate error estimate
+        if random_errors and len(random_errors) == len(random_measurements):
+            random_errors = np.array(random_errors)
+            # Combine measurement and sample variance
+            measurement_var = np.mean(random_errors**2) / len(random_errors)
+            sample_var = random_std**2 / len(random_measurements)
+            total_error = np.sqrt(measurement_var + sample_var)
+        else:
+            total_error = random_error
+        
         print(f"   ✅ Mask-bias-corrected null tests complete:")
         print(f"      Valid measurements: {len(random_measurements)}/{n_random_pointings}")
-        print(f"      Random mean: {random_mean:.2e} ± {random_error:.2e}")
+        print(f"      Random mean: {random_mean:.2e} ± {total_error:.2e}")
         print(f"      Random std: {random_std:.2e}")
         print(f"      Rejection breakdown:")
         for reason, count in rejection_reasons.items():
@@ -99,11 +113,12 @@ class NullTestValidator:
             'random_measurements': random_measurements,
             'random_mean': random_mean,
             'random_std': random_std,
-            'random_error': random_error,
+            'random_error': total_error,
             'n_valid_random': len(random_measurements),
             'n_rejected_random': rejection_count,
             'rejection_reasons': rejection_reasons,
-            'cluster_coverage_stats': cluster_coverage_stats
+            'cluster_coverage_stats': cluster_coverage_stats,
+            'has_individual_errors': len(random_errors) > 0
         }
     
     def _analyze_cluster_mask_coverage(self, coord_list, patch_size_deg, npix, 
@@ -280,3 +295,4 @@ class NullTestValidator:
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
         
         return np.degrees(c)
+
