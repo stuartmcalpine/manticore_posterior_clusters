@@ -38,6 +38,12 @@ class MapConfig:
     remove_monopole: bool = False
     remove_dipole: bool = False
     calibration_factor: float = 1.0
+
+    # harmonic filtering (ℓ-space) options
+    apply_ell_filter: bool = False
+    ell_filter_lmin: Optional[int] = None   # e.g. 360 (≈30′)
+    ell_filter_lmax: Optional[int] = None   # e.g. 720 (≈15′)
+    lmax: Optional[int] = None              # default: 3*nside-1 if None
     
     def __post_init__(self):
         """Validate configuration after initialization"""
@@ -52,7 +58,7 @@ class MapConfig:
         
         if self.coord_system not in ["G", "C"]:
             raise ValueError(f"coord_system must be 'G' (Galactic) or 'C' (Celestial), got {self.coord_system}")
-    
+ 
     @classmethod
     def for_planck_pr4(cls, y_map_path: str, masks_path: str):
         """Preset for Planck PR4 data"""
@@ -127,19 +133,29 @@ class MapConfig:
         )
 
     @classmethod
-    def for_planck_cmb_217(cls, cmb_map_path: str, cmb_mask_path: str):
-        """Preset for Planck CMB temperature maps (SMICA/NILC) for kSZ analysis"""
+    def for_planck_217_ksz(cls, map_path: str, mask_path: Optional[str] = None):
+        """
+        Preset for Planck 217 GHz map for kSZ analysis (Tanimura-style):
+        - thermodynamic units (converted to µK via calibration_factor)
+        - dipole removed
+        - high-pass ℓ filter between ~30' and 15'
+        """
         return cls(
-            map_path=cmb_map_path,
-            mask_path=cmb_mask_path,          # same file for map + TMASK
+            map_path=map_path,
+            mask_path=mask_path,
             map_format=MapFormat.HEALPIX,
-            map_column="I_STOKES",           # temperature column
-            mask_columns=["TMASK"],          # use TMASK from same table
+            map_column="I_STOKES",
+            mask_columns=["TMASK"],
             mask_combine_method="SINGLE",
             nside=2048,
             coord_system="G",
-            calibration_factor=1e6,          # K -> µK
+            calibration_factor=1e6,     # K -> µK
             remove_monopole=False,
             remove_dipole=True,
-            nested=True
+            apply_ell_filter=True,
+            ell_filter_lmin=360,        # ≈ 30 arcmin
+            ell_filter_lmax=720,        # ≈ 15 arcmin
+            lmax=None,                   # default to 3*nside-1
+            nested=True,
         )
+

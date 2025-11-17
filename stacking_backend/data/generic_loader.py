@@ -16,7 +16,54 @@ class GenericMapLoader:
     def __init__(self, config: MapConfig):
         self.config = config
         self._validate_config()
-    
+
+    def _apply_ell_filter(self, map_data: np.ndarray) -> np.ndarray:
+        """
+        Apply a harmonic-space filter to a HEALPix map.
+
+        Uses a raised-cosine high-pass:
+        - ℓ < ell_filter_lmin : 0
+        - ℓ > ell_filter_lmax : 1
+        - smooth transition between lmin and lmax
+
+        If ell_filter_lmin/lmax are not set, defaults are chosen based on NSIDE.
+        """
+        if self.config.nside is None:
+            # Try to infer NSIDE if not already set
+            self.config.nside = hp.get_nside(map_data)
+        
+        nside = self.config.nside
+        
+        # Decide lmax
+        lmax = self.config.lmax if self.config.lmax is not None else (3 * nside - 1)
+        
+        # Defaults for lmin, lmax if not provided
+        lmin = self.config.ell_filter_lmin if self.config.ell_filter_lmin is not None else int(0.5 * nside)
+        lmax_trans = self.config.ell_filter_lmax if self.config.ell_filter_lmax is not None else int(1.0 * nside)
+        
+        print(f"   Applying ℓ-space filter: lmin={lmin}, lmax={lmax_trans}, lmax_tot={lmax}")
+        
+        ell = np.arange(lmax + 1, dtype=float)
+        fl = np.ones_like(ell)
+        
+        # Below lmin -> 0
+        fl[ell < lmin] = 0.0
+        
+        # Between lmin and lmax_trans -> smooth raised cosine
+        in_trans = (ell >= lmin) & (ell <= lmax_trans)
+        if np.any(in_trans) and lmax_trans > lmin:
+            x = (ell[in_trans] - lmin) / (lmax_trans - lmin)
+            fl[in_trans] = 0.5 * (1.0 - np.cos(np.pi * x))
+        
+        # Above lmax_trans -> 1 (already default)
+        
+        # Map is assumed in RING ordering here
+        alm = hp.map2alm(map_data, lmax=lmax)
+        alm_f = hp.almxfl(alm, fl)
+        map_filtered = hp.alm2map(alm_f, nside=nside, verbose=False)
+        
+        return map_filtered
+
     def _validate_config(self):
         """Validate that files exist"""
         if not Path(self.config.map_path).exists():
@@ -203,9 +250,13 @@ class GenericMapLoader:
                 if self.config.remove_monopole:
                     print("   Removing mean...")
                     map_data = map_data - np.nanmean(map_data)
+
+        # NEW: harmonic high-pass / band-pass filter
+        if self.config.apply_ell_filter and self.config.map_format == MapFormat.HEALPIX:
+            map_data = self._apply_ell_filter(map_data)
         
         return map_data
-    
+
     def _load_flat_data(self) -> Dict:
         """Load flat 2D array data"""
         raise NotImplementedError("Flat map support will be implemented when needed")
