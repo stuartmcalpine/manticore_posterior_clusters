@@ -1,4 +1,3 @@
-# stacking_backend/analysis/validation.py
 import numpy as np
 from .photometry import AperturePhotometry
 
@@ -9,10 +8,35 @@ class NullTestValidator:
         self.patch_extractor = patch_extractor
     
     def run_null_tests(self, n_random_pointings, coord_list, inner_r500_factor, outer_r500_factor,
-                      patch_size_deg, npix, min_coverage):
-        """Run null tests with mask-bias correction"""
+                      patch_size_deg, npix, min_coverage, weights=None):
+        """
+        Run null tests with mask-bias correction.
+        
+        Parameters
+        ----------
+        n_random_pointings : int
+            Number of random pointings to test
+        coord_list : list
+            Cluster coordinate list (used for mask statistics)
+        inner_r500_factor, outer_r500_factor : float
+            Aperture definition in R500 units
+        patch_size_deg : float
+            Patch size
+        npix : int
+            Patch resolution
+        min_coverage : float
+            Minimum coverage for aperture measurement
+        weights : array-like or None
+            Optional weights (e.g. cluster velocities). If provided, the null
+            measurements are constructed using a weighted estimator, drawing
+            random weights from the same pool to emulate the weighted signal
+            estimator used in the main analysis.
+        """
         
         print(f"🎲 Running mask-bias-corrected null tests with {n_random_pointings} random pointings...")
+        
+        if weights is not None:
+            weights = np.asarray(weights)
         
         # First, analyze mask coverage distribution of actual cluster sample
         cluster_coverage_stats = self._analyze_cluster_mask_coverage(
@@ -23,6 +47,9 @@ class NullTestValidator:
         random_coords = self._generate_mask_matched_random_pointings(
             n_random_pointings, coord_list, patch_size_deg, cluster_coverage_stats
         )
+        
+        # Prepare weight pool for random pointings if we are doing weighted nulls
+        weight_pool = weights if weights is not None and len(weights) > 0 else None
         
         # Calculate measurements for random pointings
         random_measurements = []
@@ -67,16 +94,25 @@ class NullTestValidator:
                 )
                 
                 if result is not None:
-                    random_measurements.append(result['delta_y'])
-                    # Track error if available in updated photometry
-                    if 'delta_y_error' in result:
-                        random_errors.append(result['delta_y_error'])
+                    delta_y = result['delta_y']
+                    err = result.get('delta_y_error', None)
+                    
+                    if weight_pool is not None:
+                        # Draw a random weight from the same distribution as the signal
+                        w = np.random.choice(weight_pool)
+                        random_measurements.append(w * delta_y)
+                        if err is not None:
+                            random_errors.append(abs(w) * err)
+                    else:
+                        random_measurements.append(delta_y)
+                        if err is not None:
+                            random_errors.append(err)
                 else:
                     reason = diagnostics.get('rejection_reason', 'unknown')
                     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
                     rejection_count += 1
                     
-            except Exception as e:
+            except Exception:
                 rejection_reasons['extraction_error'] += 1
                 rejection_count += 1
                 continue
@@ -86,6 +122,7 @@ class NullTestValidator:
             return None
         
         # Calculate null test statistics with errors if available
+        random_measurements = np.asarray(random_measurements)
         random_mean = np.mean(random_measurements)
         random_std = np.std(random_measurements)
         random_error = random_std / np.sqrt(len(random_measurements))
@@ -110,7 +147,7 @@ class NullTestValidator:
                 print(f"        - {reason}: {count}")
         
         return {
-            'random_measurements': random_measurements,
+            'random_measurements': random_measurements.tolist(),
             'random_mean': random_mean,
             'random_std': random_std,
             'random_error': total_error,

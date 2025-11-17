@@ -8,13 +8,40 @@ class PatchStacker:
         self.patch_extractor = patch_extractor
     
     def stack_patches(self, coord_list, patch_size_deg=15.0, npix=256,
-                     min_coverage=0.9, max_patches=None):
-        """Stack multiple patches and return stacked data"""
+                     min_coverage=0.9, max_patches=None, weights=None):
+        """
+        Stack multiple patches and return stacked data
+        
+        Parameters
+        ----------
+        coord_list : list
+            List of coordinates (and optionally r500, z, etc.)
+        patch_size_deg : float
+            Size of square patch in degrees
+        npix : int
+            Number of pixels per side of patch
+        min_coverage : float
+            Minimum fraction of valid pixels required
+        max_patches : int or None
+            Optional maximum number of patches to stack
+        weights : array-like or None
+            Optional per-cluster weights (e.g. LOS velocities for kSZ).
+            If None, a simple unweighted average is used (backwards compatible).
+        """
         
         print(f"🔄 Stacking {len(coord_list)} patches...")
         
+        if weights is not None:
+            weights = np.asarray(weights)
+            if len(weights) != len(coord_list):
+                raise ValueError(
+                    f"weights must have same length as coord_list "
+                    f"({len(weights)} vs {len(coord_list)})"
+                )
+        
         valid_patches = []
         valid_coords = []
+        valid_weights = [] if weights is not None else None
         rejection_stats = {'insufficient_coverage': 0, 'extraction_error': 0}
         
         # Process each coordinate
@@ -56,11 +83,13 @@ class PatchStacker:
                     rejection_stats['insufficient_coverage'] += 1
                     continue
                 
-                # Estimate background from outer ring
+                # Subtract background from outer ring
                 patch_data = self._subtract_background(patch_data, patch_size_deg, npix, i)
                 
                 valid_patches.append(patch_data)
                 valid_coords.append(coords)
+                if valid_weights is not None:
+                    valid_weights.append(weights[i])
                 
             except Exception as e:
                 print(f"   Error extracting patch {i}: {e}")
@@ -76,8 +105,10 @@ class PatchStacker:
               f"{rejection_stats['extraction_error']} (errors)")
         
         # Stack patches
-        stacked_patch, stacking_info = self._compute_stack(valid_patches, valid_coords, 
-                                                          patch_size_deg, npix, rejection_stats)
+        stacked_patch, stacking_info = self._compute_stack(
+            valid_patches, valid_coords, patch_size_deg, npix,
+            rejection_stats, valid_weights=valid_weights
+        )
         
         return stacked_patch, stacking_info, rejection_stats
     
@@ -96,16 +127,50 @@ class PatchStacker:
         
         return patch_data
     
-    def _compute_stack(self, valid_patches, valid_coords, patch_size_deg, npix, rejection_stats):
-        """Compute the final stacked patch"""
-        patch_stack = np.array(valid_patches)
+    def _compute_stack(self, valid_patches, valid_coords, patch_size_deg, npix,
+                       rejection_stats, valid_weights=None):
+        """
+        Compute the final stacked patch.
         
-        # Calculate mean, ignoring NaNs
+        If valid_weights is None:
+            - Use simple unweighted mean (backwards compatible).
+        If valid_weights is not None:
+            - Use Tanimura-style weighted stack:
+              T_stack(x,y) = sum_i w_i T_i(x,y) / sum_i |w_i| over valid pixels.
+        """
+        patch_stack = np.array(valid_patches)  # shape: (N, ny, nx)
+        
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            stacked_patch = np.nanmean(patch_stack, axis=0)
-            stacked_std = np.nanstd(patch_stack, axis=0)
-            n_contributing = np.sum(np.isfinite(patch_stack), axis=0)
+            
+            if valid_weights is None:
+                # Unweighted stack (tSZ / legacy behaviour)
+                stacked_patch = np.nanmean(patch_stack, axis=0)
+                stacked_std = np.nanstd(patch_stack, axis=0)
+                n_contributing = np.sum(np.isfinite(patch_stack), axis=0)
+            else:
+                # Weighted stack (e.g. kSZ with velocity weights)
+                w = np.asarray(valid_weights)  # shape: (N,)
+                w2d = w[:, None, None]        # broadcast to (N, ny, nx)
+                
+                finite_mask = np.isfinite(patch_stack)
+                
+                # Numerator: sum_i w_i * T_i over valid pixels
+                num = np.nansum(patch_stack * w2d, axis=0)
+                
+                # Denominator per pixel: sum_i |w_i| for clusters that contribute at that pixel
+                den = np.sum(np.abs(w2d) * finite_mask, axis=0)
+                
+                stacked_patch = np.full_like(num, np.nan, dtype=float)
+                valid = den > 0
+                stacked_patch[valid] = num[valid] / den[valid]
+                
+                # For diagnostics: how many clusters contributed at each pixel
+                n_contributing = np.sum(finite_mask, axis=0)
+                
+                # We keep a simple std definition; uncertainties on profiles
+                # should come from bootstrap, not per-pixel std alone.
+                stacked_std = np.nanstd(patch_stack, axis=0)
         
         # Calculate standard error
         stacked_error = stacked_std / np.sqrt(np.maximum(n_contributing, 1))
@@ -119,10 +184,14 @@ class PatchStacker:
             'valid_coords': valid_coords,
             'stacked_std': stacked_std,
             'stacked_error': stacked_error,
-            'n_contributing': n_contributing
+            'n_contributing': n_contributing,
+            'weights_used': valid_weights is not None
         }
         
         print(f"   Stack dimensions: {stacked_patch.shape}")
         print(f"   Valid pixel range: {np.nanmin(n_contributing)}-{np.nanmax(n_contributing)} patches")
+        if valid_weights is not None:
+            print(f"   Weighted stack: using {len(valid_patches)} weights")
         
         return stacked_patch, stacking_info
+

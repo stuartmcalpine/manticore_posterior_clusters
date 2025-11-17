@@ -1,4 +1,3 @@
-# stacking_backend/analysis/individual_clusters.py
 import numpy as np
 from .photometry import AperturePhotometry
 
@@ -9,10 +8,38 @@ class IndividualClusterAnalyzer:
         self.patch_extractor = patch_extractor
     
     def calculate_measurements(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
-                             patch_size_deg=15.0, npix=256, min_coverage=0.9):
-        """Calculate individual cluster measurements with error estimation"""
+                             patch_size_deg=15.0, npix=256, min_coverage=0.9,
+                             weights=None):
+        """
+        Calculate individual cluster measurements with error estimation.
+        
+        Parameters
+        ----------
+        coord_list : list
+            List of cluster coordinates (lon, lat, r500[, z, ...])
+        inner_r500_factor, outer_r500_factor : float
+            Aperture definition in units of R500
+        patch_size_deg : float
+            Patch size (degrees)
+        npix : int
+            Patch resolution
+        min_coverage : float
+            Minimum coverage fraction
+        weights : array-like or None
+            Optional per-cluster weights (e.g. LOS velocities). When provided,
+            the weight for each successfully measured cluster is stored in the
+            result dict as 'weight'.
+        """
         
         print(f"🔍 Calculating individual cluster measurements with error estimation...")
+        
+        if weights is not None:
+            weights = np.asarray(weights)
+            if len(weights) != len(coord_list):
+                raise ValueError(
+                    f"weights must have same length as coord_list "
+                    f"({len(weights)} vs {len(coord_list)})"
+                )
         
         individual_results = []
         rejection_stats = {
@@ -64,6 +91,10 @@ class IndividualClusterAnalyzer:
                         combined_result = {**aperture_result, **y500_result}
                         combined_result['cluster_index'] = i
                         combined_result['coords'] = coords
+                        
+                        # Attach weight if provided
+                        if weights is not None:
+                            combined_result['weight'] = float(weights[i])
                         
                         # Add measurement quality metrics
                         combined_result['measurement_quality'] = {
