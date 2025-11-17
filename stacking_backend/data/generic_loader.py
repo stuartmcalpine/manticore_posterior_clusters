@@ -95,7 +95,7 @@ class GenericMapLoader:
         else:
             # Simple HEALPix map (single array)
             map_data, header = hp.read_map(self.config.map_path, 
-                                          h=True, verbose=False)
+                                          h=True)
             header = dict(header)
             
             if self.config.nside is None:
@@ -170,7 +170,7 @@ class GenericMapLoader:
         else:
             # Simple mask (single array)
             if self.config.map_format == MapFormat.HEALPIX:
-                mask_data = hp.read_map(self.config.mask_path, verbose=False)
+                mask_data = hp.read_map(self.config.mask_path)
             else:
                 with fits.open(self.config.mask_path) as hdul:
                     mask_data = hdul[self.config.mask_hdu].data
@@ -194,10 +194,10 @@ class GenericMapLoader:
                 # Use healpy for monopole/dipole removal
                 if self.config.remove_dipole:
                     print("   Removing dipole...")
-                    map_data = hp.remove_dipole(map_data, verbose=False)
+                    map_data = hp.remove_dipole(map_data)
                 elif self.config.remove_monopole:
                     print("   Removing monopole...")
-                    map_data = hp.remove_monopole(map_data, verbose=False)
+                    map_data = hp.remove_monopole(map_data)
             else:
                 # Simple mean subtraction for non-HEALPix
                 if self.config.remove_monopole:
@@ -213,35 +213,3 @@ class GenericMapLoader:
     def _load_fits_image_data(self) -> Dict:
         """Load FITS image data"""
         raise NotImplementedError("FITS image support will be implemented when needed")
-
-# Backward compatibility function
-def load_pr4_data(data_paths=None, validate_paths=True, use_cache=True):
-    """
-    Backward compatibility wrapper for loading Planck PR4 data
-    
-    This function maintains the original API while using the new generic loader
-    """
-    from ..config.paths import DataPaths
-    from ..config.map_config import MapConfig
-    
-    if data_paths is None:
-        data_paths = DataPaths.get_default()
-    
-    # Create MapConfig for PR4 data
-    config = MapConfig.for_planck_pr4(data_paths.pr4_y_map, data_paths.pr4_masks)
-    
-    # Load using generic loader
-    loader = GenericMapLoader(config)
-    data = loader.load_data(use_cache=use_cache)
-    
-    # Return in the expected format for backward compatibility
-    return {
-        'y_map': data['map'],
-        'y_half1': data.get('map_half1'),
-        'y_half2': data.get('map_half2'),
-        'nilc_mask': None,  # Individual masks not loaded separately anymore
-        'gal_mask': None,
-        'ps_mask': None,
-        'nside': data['nside'],
-        'combined_mask': data['mask']
-    }

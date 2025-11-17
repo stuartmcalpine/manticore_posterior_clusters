@@ -109,19 +109,37 @@ class MapConfig:
         )
 
     @classmethod
-    def for_planck_cmb_smica(cls, cmb_map_path: str, mask_path: Optional[str] = None):
+    def for_planck_cmb_smica(cls, cmb_map_path: str):
         """Preset for Planck CMB temperature maps (SMICA/NILC) for kSZ analysis"""
         return cls(
             map_path=cmb_map_path,
-            mask_path=mask_path,
+            mask_path=cmb_map_path,          # same file for map + TMASK
             map_format=MapFormat.HEALPIX,
-            map_column=None,  # CMB maps typically don't use columns
-            mask_columns=None,
+            map_column="I_STOKES",           # temperature column
+            mask_columns=["TMASK"],          # use TMASK from same table
             mask_combine_method="SINGLE",
             nside=2048,
             coord_system="G",
-            calibration_factor=1e6,  # Convert K to µK if needed
-            remove_monopole=False,  # Keep CMB fluctuations for kSZ
-            remove_dipole=True  # Remove any residual dipole
+            calibration_factor=1e6,          # K -> µK
+            remove_monopole=False,
+            remove_dipole=True,
+            nested=True
         )
 
+    @classmethod
+    def for_planck_cmb_217(cls, cmb_map_path: str, cmb_mask_path: str):
+        """Preset for Planck CMB temperature maps (SMICA/NILC) for kSZ analysis"""
+        return cls(
+            map_path=cmb_map_path,
+            mask_path=cmb_mask_path,          # same file for map + TMASK
+            map_format=MapFormat.HEALPIX,
+            map_column="I_STOKES",           # temperature column
+            mask_columns=["TMASK"],          # use TMASK from same table
+            mask_combine_method="SINGLE",
+            nside=2048,
+            coord_system="G",
+            calibration_factor=1e6,          # K -> µK
+            remove_monopole=False,
+            remove_dipole=True,
+            nested=True
+        )

@@ -60,7 +60,7 @@ class ClusterAnalysisPipeline:
     def run_individual_r500_analysis_with_validation(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                                                    patch_size_deg=15.0, npix=256, max_patches=None,
                                                    min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
-                                                   n_bootstrap=500, n_random=500, weights=None):
+                                                   n_bootstrap=500, n_random=500, weights=None, max_radius_r500=5):
         """
         Full analysis pipeline with corrected error propagation and significance calculation.
         
@@ -181,7 +181,8 @@ class ClusterAnalysisPipeline:
             stacked_patch=stacked_patch,
             patch_size_deg=patch_size_deg,
             r500_deg=median_r500_deg,
-            n_radial_bins=n_radial_bins
+            n_radial_bins=n_radial_bins,
+            max_radius_r500=max_radius_r500,
         )
         
         # Step 7: Compile results
