@@ -8,7 +8,9 @@ class PatchStacker:
         self.patch_extractor = patch_extractor
     
     def stack_patches(self, coord_list, patch_size_deg=15.0, npix=256,
-                     min_coverage=0.9, max_patches=None, weights=None):
+                 min_coverage=0.9, max_patches=None, weights=None,
+                 subtract_background=True, bg_inner_radius_deg=5.0, 
+                 bg_outer_radius_deg=7.0):
         """
         Stack multiple patches and return stacked data
         
@@ -27,8 +29,14 @@ class PatchStacker:
         weights : array-like or None
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
             If None, a simple unweighted average is used (backwards compatible).
+        subtract_background : bool
+            Whether to subtract background from outer annulus (default: True)
+        bg_inner_radius_deg : float
+            Inner radius for background annulus in degrees (default: 5.0)
+        bg_outer_radius_deg : float
+            Outer radius for background annulus in degrees (default: 7.0)
         """
-        
+
         print(f"🔄 Stacking {len(coord_list)} patches...")
         
         if weights is not None:
@@ -72,7 +80,6 @@ class PatchStacker:
                     if coverage < min_coverage:
                         rejection_stats['insufficient_coverage'] += 1
                         continue
-                
                 # Apply mask to data
                 if mask_patch is not None:
                     patch_data[~mask_patch] = np.nan
@@ -83,8 +90,12 @@ class PatchStacker:
                     rejection_stats['insufficient_coverage'] += 1
                     continue
                 
-                # Subtract background from outer ring
-                patch_data = self._subtract_background(patch_data, patch_size_deg, npix, i)
+                # Subtract background from outer ring if requested
+                if subtract_background:
+                    patch_data = self._subtract_background(
+                        patch_data, patch_size_deg, npix, i,
+                        bg_inner_radius_deg, bg_outer_radius_deg
+                    )
                 
                 valid_patches.append(patch_data)
                 valid_coords.append(coords)
@@ -112,13 +123,31 @@ class PatchStacker:
         
         return stacked_patch, stacking_info, rejection_stats
     
-    def _subtract_background(self, patch_data, patch_size_deg, npix, patch_index):
-        """Subtract background from patch using outer annulus"""
+    def _subtract_background(self, patch_data, patch_size_deg, npix, patch_index,
+                            bg_inner_radius_deg=5.0, bg_outer_radius_deg=7.0):
+        """
+        Subtract background from patch using outer annulus
+        
+        Parameters
+        ----------
+        patch_data : array
+            The patch data to subtract background from
+        patch_size_deg : float
+            Size of the patch in degrees
+        npix : int
+            Number of pixels per side
+        patch_index : int
+            Index of the current patch (for warnings)
+        bg_inner_radius_deg : float
+            Inner radius of background annulus in degrees
+        bg_outer_radius_deg : float
+            Outer radius of background annulus in degrees
+        """
         npix_half = npix // 2
         y, x = np.ogrid[:npix, :npix]
         radius = np.sqrt((x - npix_half)**2 + (y - npix_half)**2) * (patch_size_deg / npix)
         
-        bg_mask = (radius > 5.0) & (radius < 7.0) & np.isfinite(patch_data)
+        bg_mask = (radius > bg_inner_radius_deg) & (radius < bg_outer_radius_deg) & np.isfinite(patch_data)
         if np.sum(bg_mask) > 100:  # Ensure enough pixels
             bg_level = np.median(patch_data[bg_mask])
             patch_data -= bg_level
@@ -126,7 +155,7 @@ class PatchStacker:
             print(f"   Warning: not enough background pixels for patch {patch_index}")
         
         return patch_data
-    
+
     def _compute_stack(self, valid_patches, valid_coords, patch_size_deg, npix,
                        rejection_stats, valid_weights=None):
         """

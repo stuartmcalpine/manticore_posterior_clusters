@@ -58,9 +58,11 @@ class ClusterAnalysisPipeline:
             raise RuntimeError(f"Failed to initialize analysis pipeline: {str(e)}") from e
     
     def run_individual_r500_analysis_with_validation(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
-                                                   patch_size_deg=15.0, npix=256, max_patches=None,
-                                                   min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
-                                                   n_bootstrap=500, n_random=500, weights=None, max_radius_r500=5):
+                                               patch_size_deg=15.0, npix=256, max_patches=None,
+                                               min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
+                                               n_bootstrap=500, n_random=500, weights=None, max_radius_r500=5,
+                                               subtract_background=True, bg_inner_radius_deg=5.0,
+                                               bg_outer_radius_deg=7.0):
         """
         Full analysis pipeline with corrected error propagation and significance calculation.
         
@@ -72,8 +74,14 @@ class ClusterAnalysisPipeline:
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
             If provided, both the stacked patch and the scalar estimator used
             for significance will be weighted in a Tanimura-like fashion.
+        subtract_background : bool
+            Whether to subtract background in stacking (default: True)
+        bg_inner_radius_deg : float
+            Inner radius for background annulus in degrees (default: 5.0)  
+        bg_outer_radius_deg : float
+            Outer radius for background annulus in degrees (default: 7.0)
         """
-        
+
         # Input validation
         InputValidator.validate_coord_list(coord_list)
         InputValidator.validate_analysis_params(patch_size_deg, npix, inner_r500_factor, outer_r500_factor, min_coverage)
@@ -145,9 +153,11 @@ class ClusterAnalysisPipeline:
             npix=npix,
             min_coverage=min_coverage,
             max_patches=max_patches,
-            weights=individual_weights  # None for tSZ, velocities for kSZ
+            weights=individual_weights,  # None for tSZ, velocities for kSZ
+            subtract_background=subtract_background,
+            bg_inner_radius_deg=bg_inner_radius_deg,
+            bg_outer_radius_deg=bg_outer_radius_deg
         )
-        
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')
         
