@@ -36,7 +36,7 @@ class ClusterAnalysisPipeline:
         try:
             # Use GenericMapLoader with the provided MapConfig
             loader = GenericMapLoader(self.map_config)
-            data = loader.load_data(use_cache=True)
+            data = loader.load_data()
             
             # Initialize PatchExtractor with loaded data
             self.patch_extractor = PatchExtractor(

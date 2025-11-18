@@ -65,118 +65,54 @@ class PatchExtractor:
             if len(self.combined_mask) != len(self.y_map):
                 raise ValueError(f"Mask length {len(self.combined_mask)} doesn't match "
                                  f"map length {len(self.y_map)}")
-    
+
     def extract_patch(self, center_coords, patch_size_deg, npix, coord_system=None):
         """
-        Extract patch from map at given coordinates using a local tangent-plane
-        projection around the center. This is robust even near poles.
-
-        Parameters
-        ----------
-        center_coords : tuple
-            (lon, lat) in degrees, in the coordinate system given by coord_system.
-            If coord_system is None, interpreted in the map's coord_system.
-        patch_size_deg : float
-            Patch size in degrees (total side length).
-        npix : int
-            Number of pixels along each axis in the output patch.
-        coord_system : str, optional
-            Coordinate system of center_coords ('G' for Galactic, 'C' for Celestial/Equatorial).
-            If None, uses the map's coordinate system.
-
-        Returns
-        -------
-        y_patch : ndarray
-            2D array (npix x npix) of map values.
-        mask_patch : ndarray or None
-            2D boolean array (npix x npix) of mask values, or None if no mask.
+        Extract patch from map using healpy's gnomonic projection, assuming
+        center_coords are in the same coordinate system as the map.
+        This is a minimal version for debugging: no extra conversions.
         """
-        
-        # Input validation
-        if len(center_coords) < 2:
-            raise ValueError(f"center_coords must have at least 2 elements, got {len(center_coords)}")
-        
-        lon_c_in, lat_c_in = center_coords[0], center_coords[1]
-        
-        # Use map's coordinate system if not specified
-        if coord_system is None:
-            coord_system = self.coord_system
-        
-        if coord_system not in ('G', 'C'):
-            raise ValueError(f"coord_system must be 'G' or 'C', got {coord_system}")
-        
-        # Basic range checks in the input frame (both use lon in [0,360], lat in [-90,90])
-        if not (0.0 <= lon_c_in <= 360.0):
-            raise ValueError(f"Longitude out of range [0, 360]: {lon_c_in}")
-        if not (-90.0 <= lat_c_in <= 90.0):
-            raise ValueError(f"Latitude out of range [-90, 90]: {lat_c_in}")
-        
-        if patch_size_deg <= 0 or patch_size_deg > 90:
-            raise ValueError(f"patch_size_deg must be in (0, 90], got {patch_size_deg}")
-        
-        if npix <= 0 or not isinstance(npix, int):
-            raise ValueError(f"npix must be positive integer, got {npix}")
-        
+        lon_c, lat_c = center_coords[:2]
+    
+        # Sanity checks
+        if not (0.0 <= lon_c <= 360.0):
+            raise ValueError(f"Longitude out of range [0, 360]: {lon_c}")
+        if not (-90.0 <= lat_c <= 90.0):
+            raise ValueError(f"Latitude out of range [-90, 90]: {lat_c}")
+        if patch_size_deg <= 0 or npix <= 0:
+            raise ValueError("patch_size_deg and npix must be positive")
+    
+        reso_arcmin = (patch_size_deg / npix) * 60.0  # arcmin per pixel
+    
         with self._lock:
-            try:
-                # ------------------------------------------------------
-                # 1) Convert center to map's native coordinate system
-                # ------------------------------------------------------
-                if coord_system != self.coord_system:
-                    lon_c_map, lat_c_map = self._convert_coordinates(
-                        lon_c_in, lat_c_in,
-                        from_system=coord_system,
-                        to_system=self.coord_system
-                    )
-                else:
-                    lon_c_map, lat_c_map = lon_c_in, lat_c_in
-
-                # ------------------------------------------------------
-                # 2) Build tangent-plane patch in the map's frame
-                # ------------------------------------------------------
-                if self.coord_system == 'G':
-                    frame_name = 'galactic'
-                else:  # 'C'
-                    frame_name = 'icrs'
-
-                lon_map, lat_map = CoordinateTransformer.create_tangent_patch(
-                    center_lon=lon_c_map,
-                    center_lat=lat_c_map,
-                    patch_size_deg=patch_size_deg,
-                    npix=npix,
-                    frame=frame_name
+            # Map patch
+            y_patch = hp.gnomview(
+                self.y_map,
+                rot=(lon_c, lat_c, 0.0),
+                xsize=npix,
+                reso=reso_arcmin,
+                no_plot=True,
+                return_projected_map=True,
+                nest=self.nested,
+            )
+    
+            # Mask patch (if any)
+            if self.combined_mask is not None:
+                mask_proj = hp.gnomview(
+                    self.combined_mask.astype(float),
+                    rot=(lon_c, lat_c, 0.0),
+                    xsize=npix,
+                    reso=reso_arcmin,
+                    no_plot=True,
+                    return_projected_map=True,
+                    nest=self.nested,
                 )
+                mask_patch = mask_proj > 0.5
+            else:
+                mask_patch = None
+    
+        return y_patch, mask_patch
 
-                # ------------------------------------------------------
-                # 3) Convert to HEALPix theta, phi in the map's system
-                # ------------------------------------------------------
-                theta = np.radians(90.0 - lat_map)
-                phi = np.radians(lon_map)
-
-                # ------------------------------------------------------
-                # 4) Interpolate y-map on this grid
-                # ------------------------------------------------------
-                y_flat = hp.get_interp_val(self.y_map, theta, phi, nest=self.nested)
-                y_patch = y_flat.reshape(npix, npix)
-
-                # ------------------------------------------------------
-                # 5) Interpolate mask if available
-                # ------------------------------------------------------
-                if self.combined_mask is not None:
-                    mask_flat = hp.get_interp_val(
-                        self.combined_mask.astype(float),
-                        theta, phi, nest=self.nested
-                    )
-                    mask_patch = (mask_flat > 0.5).reshape(npix, npix)
-                else:
-                    mask_patch = None
-                
-                return y_patch, mask_patch
-                
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to extract patch at ({lon_c_in}, {lat_c_in}) in coord_system={coord_system}: {str(e)}"
-                ) from e
 
     def _convert_coordinates(self, lon, lat, from_system, to_system):
         """

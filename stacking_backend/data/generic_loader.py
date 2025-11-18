@@ -17,6 +17,154 @@ class GenericMapLoader:
         self.config = config
         self._validate_config()
 
+    def _load_cl_from_file(self, path: str, lmax: int) -> np.ndarray:
+        """
+        Load C_ell from a file.
+
+        Accepted formats:
+        - 1D array saved with np.save
+        - Text file with either:
+          * one column: C_ell for ell = 0..N-1
+          * two columns: ell, C_ell
+
+        Returns array of length >= lmax+1; truncated if longer.
+        """
+        if path is None:
+            raise ValueError("C_ell path is None but matched filter requested")
+
+        p = Path(path)
+        if not p.is_file():
+            raise FileNotFoundError(f"C_ell file not found: {path}")
+
+        try:
+            arr = np.load(p)
+        except Exception:
+            arr = np.loadtxt(p)
+
+        arr = np.atleast_1d(arr)
+
+        # If 2D (ell, Cl)
+        if arr.ndim == 2:
+            if arr.shape[1] == 1:
+                cl = arr[:, 0]
+            else:
+                # assume first column ell, second column C_ell
+                cl = arr[:, 1]
+        else:
+            cl = arr
+
+        if cl.shape[0] <= lmax:
+            # pad with zeros if needed
+            cl_padded = np.zeros(lmax + 1)
+            cl_padded[:cl.shape[0]] = cl
+            return cl_padded
+        else:
+            return cl[:lmax + 1]
+
+    def _apply_tanimura_filter(self, map_data: np.ndarray) -> np.ndarray:
+        """
+        Apply the Tanimura et al.-style ℓ-space high-pass filter:
+
+            - W_l = 0 for l < ell_filter_lmin
+            - W_l = 1 for l > ell_filter_lmax
+            - cosine ramp between ell_filter_lmin and ell_filter_lmax
+
+        The filter operates in harmonic space and preserves map units (e.g. µK).
+        """
+        # Ensure we know nside
+        nside = self.config.nside or hp.get_nside(map_data)
+        lmax = 3 * nside - 1
+
+        l1 = self.config.ell_filter_lmin
+        l2 = self.config.ell_filter_lmax
+        if not (0 <= l1 < l2 <= lmax):
+            raise ValueError(
+                f"Invalid (ell_filter_lmin, ell_filter_lmax)=({l1},{l2}) for lmax={lmax}"
+            )
+
+        ell = np.arange(lmax + 1, dtype=float)
+
+        # Build W_l
+        W = np.ones_like(ell, dtype=float)
+        W[ell < l1] = 0.0
+
+        mid = (ell >= l1) & (ell <= l2)
+        ramp = (ell[mid] - l1) / (l2 - l1)          # 0 → 1
+        W[mid] = 0.5 * (1.0 - np.cos(np.pi * ramp))  # smooth cosine 0→1
+
+        # Alm transforms expect RING ordering
+        if self.config.nested:
+            print("   Reordering map NESTED → RING for harmonic filtering")
+            map_ring = hp.reorder(map_data, n2r=True)
+        else:
+            map_ring = map_data
+
+        # Forward transform
+        alm = hp.map2alm(map_ring, lmax=lmax, iter=0)
+        # Apply filter in-place
+        hp.almxfl(alm, W, inplace=True)
+        # Back to map
+        filtered_ring = hp.alm2map(alm, nside, verbose=False)
+
+        if self.config.nested:
+            print("   Reordering filtered map RING → NESTED")
+            filtered_map = hp.reorder(filtered_ring, r2n=True)
+        else:
+            filtered_map = filtered_ring
+
+        var_before = np.nanvar(map_data)
+        var_after = np.nanvar(filtered_map)
+        print(f"   Tanimura filter variance: before={var_before:.3e}, "
+              f"after={var_after:.3e} (ratio={var_after/var_before:.3f})")
+
+        return filtered_map
+
+    def _apply_matched_filter(self, map_data: np.ndarray) -> np.ndarray:
+        """
+        Apply a simple inverse-variance harmonic filter:
+    
+            F_l ∝ 1 / (C_l^CMB + N_l)
+    
+        This suppresses large-scale primary CMB (where CMB dominates)
+        while leaving small scales (where noise dominates) mostly intact.
+    
+        We normalize so that max(F_l) = 1 to keep amplitudes reasonable.
+        """
+        if self.config.nside is None:
+            self.config.nside = hp.get_nside(map_data)
+        nside = self.config.nside
+    
+        lmax = self.config.matched_filter_lmax
+        if lmax is None:
+            lmax = 3 * nside - 1
+    
+        print(f"   Applying inverse-variance harmonic filter: lmax={lmax}")
+    
+        # Load CMB + noise spectra
+        cl_cmb = self._load_cl_from_file(self.config.matched_filter_cmb_cl_path, lmax)
+        cl_noise = self._load_cl_from_file(self.config.matched_filter_noise_cl_path, lmax)
+    
+        ell = np.arange(lmax + 1, dtype=float)
+        cl_tot = cl_cmb + cl_noise
+    
+        # Avoid division by zero
+        safe = cl_tot > 0
+        f_l = np.zeros_like(ell, dtype=float)
+        f_l[safe] = 1.0 / cl_tot[safe]
+    
+        # Normalize to max(F_l) = 1 so we don't wipe out amplitudes
+        max_f = np.max(f_l[safe])
+        if max_f > 0:
+            f_l /= max_f
+    
+        # Transform map -> alm -> apply filter -> back to map
+        alm = hp.map2alm(map_data, lmax=lmax)
+        alm_filt = hp.almxfl(alm, f_l)
+        map_filt = hp.alm2map(alm_filt, nside=nside, verbose=False)
+    
+        return map_filt
+
+
     def _apply_ell_filter(self, map_data: np.ndarray) -> np.ndarray:
         """
         Apply a harmonic-space filter to a HEALPix map.
@@ -72,7 +220,7 @@ class GenericMapLoader:
         if self.config.mask_path and not Path(self.config.mask_path).exists():
             raise FileNotFoundError(f"Mask file not found: {self.config.mask_path}")
     
-    def load_data(self, use_cache: bool = True) -> Dict:
+    def load_data(self, use_cache: bool = False) -> Dict:
         """Load map and mask data based on configuration"""
         
         # Check cache
@@ -238,7 +386,6 @@ class GenericMapLoader:
         # Remove monopole/dipole if requested
         if self.config.remove_monopole or self.config.remove_dipole:
             if self.config.map_format == MapFormat.HEALPIX:
-                # Use healpy for monopole/dipole removal
                 if self.config.remove_dipole:
                     print("   Removing dipole...")
                     map_data = hp.remove_dipole(map_data)
@@ -246,15 +393,16 @@ class GenericMapLoader:
                     print("   Removing monopole...")
                     map_data = hp.remove_monopole(map_data)
             else:
-                # Simple mean subtraction for non-HEALPix
                 if self.config.remove_monopole:
                     print("   Removing mean...")
                     map_data = map_data - np.nanmean(map_data)
 
-        # NEW: harmonic high-pass / band-pass filter
-        if self.config.apply_ell_filter and self.config.map_format == MapFormat.HEALPIX:
-            map_data = self._apply_ell_filter(map_data)
-        
+        # NEW: Tanimura ℓ-space high-pass
+        if self.config.map_format == MapFormat.HEALPIX and self.config.ell_filter_type == "tanimura":
+            print(f"   Applying Tanimura high-pass filter "
+                  f"(ℓ ∈ [{self.config.ell_filter_lmin}, {self.config.ell_filter_lmax}])")
+            map_data = self._apply_tanimura_filter(map_data)
+
         return map_data
 
     def _load_flat_data(self) -> Dict:

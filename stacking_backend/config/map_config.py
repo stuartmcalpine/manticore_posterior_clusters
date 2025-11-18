@@ -22,29 +22,28 @@ class MapConfig:
     mask_hdu: int = 1
     
     # Column/field names (for multi-column FITS)
-    map_column: Optional[str] = None  # None means use primary data array
-    mask_columns: Optional[List[str]] = None  # Multiple masks to combine
+    map_column: Optional[str] = None
+    mask_columns: Optional[List[str]] = None
     
     # HEALPix specific
-    nside: Optional[int] = None  # Auto-detect if None
+    nside: Optional[int] = None
     nested: bool = False
-    coord_system: str = "G"  # G=Galactic, C=Celestial/Equatorial
+    coord_system: str = "G"
     
     # Mask combination strategy
-    mask_combine_method: str = "AND"  # AND, OR, or SINGLE
-    mask_threshold: float = 0.5  # For converting float masks to boolean
+    mask_combine_method: str = "AND"
+    mask_threshold: float = 0.5
     
     # Data preprocessing
     remove_monopole: bool = False
     remove_dipole: bool = False
     calibration_factor: float = 1.0
 
-    # harmonic filtering (ℓ-space) options
-    apply_ell_filter: bool = False
-    ell_filter_lmin: Optional[int] = None   # e.g. 360 (≈30′)
-    ell_filter_lmax: Optional[int] = None   # e.g. 720 (≈15′)
-    lmax: Optional[int] = None              # default: 3*nside-1 if None
-    
+    # ℓ-space Tanimura-style high-pass filter
+    ell_filter_type: Optional[str] = None  # None or "tanimura"
+    ell_filter_lmin: int = 360             # start of ramp (ℓ₁)
+    ell_filter_lmax: int = 720             # end of ramp (ℓ₂)
+
     def __post_init__(self):
         """Validate configuration after initialization"""
         if self.map_format not in MapFormat:
@@ -58,7 +57,8 @@ class MapConfig:
         
         if self.coord_system not in ["G", "C"]:
             raise ValueError(f"coord_system must be 'G' (Galactic) or 'C' (Celestial), got {self.coord_system}")
- 
+
+
     @classmethod
     def for_planck_pr4(cls, y_map_path: str, masks_path: str):
         """Preset for Planck PR4 data"""
@@ -128,34 +128,52 @@ class MapConfig:
             coord_system="G",
             calibration_factor=1e6,          # K -> µK
             remove_monopole=False,
-            remove_dipole=True,
-            nested=True
+            remove_dipole=False,
+            nested=True,
+            apply_ell_filter=False,
+            ell_filter_lmin=360,        # ≈ 30 arcmin
+            ell_filter_lmax=720,        # ≈ 15 arcmin
+            lmax=None,                   # default to 3*nside-1
         )
 
     @classmethod
-    def for_planck_217_ksz(cls, map_path: str, mask_path: Optional[str] = None):
+    def for_planck_217_tanimura(
+        cls,
+        map_path: str,
+        mask_path: Optional[str] = None,
+        ell_lmin: int = 360,
+        ell_lmax: int = 720,
+        nested: bool = True,
+        ell_filter_type = "tanimura"
+    ):
         """
-        Preset for Planck 217 GHz map for kSZ analysis (Tanimura-style):
-        - thermodynamic units (converted to µK via calibration_factor)
-        - dipole removed
-        - high-pass ℓ filter between ~30' and 15'
+        Preset for Planck 217 GHz map processed with a Tanimura-style
+        ℓ-space high-pass filter for kSZ analysis.
+    
+        - Uses I_STOKES as the temperature map.
+        - Assumes NSIDE=2048, Galactic coordinates.
+        - Converts K_CMB → µK_CMB via calibration_factor.
+        - Applies a cosine high-pass window W_ell:
+            W_ell = 0 for ell < ell_lmin
+            W_ell = 1 for ell > ell_lmax
+            smooth ramp between ell_lmin and ell_lmax.
         """
         return cls(
             map_path=map_path,
             mask_path=mask_path,
             map_format=MapFormat.HEALPIX,
-            map_column="I_STOKES",
+            map_hdu=1,                 # FREQ-MAP HDU
+            map_column="I_STOKES",     # main temperature map
             mask_columns=["TMASK"],
             mask_combine_method="SINGLE",
             nside=2048,
-            coord_system="G",
-            calibration_factor=1e6,     # K -> µK
+            nested=nested,             # True for HFI_SkyMap_217_2048_R3.01_full.fits
+            coord_system="G",          # GALACTIC in the header
+            calibration_factor=1e6,    # K → µK
             remove_monopole=False,
-            remove_dipole=True,
-            apply_ell_filter=True,
-            ell_filter_lmin=360,        # ≈ 30 arcmin
-            ell_filter_lmax=720,        # ≈ 15 arcmin
-            lmax=None,                   # default to 3*nside-1
-            nested=True,
+            remove_dipole=False,       # you can set True if you want dipole removed
+            ell_filter_type=ell_filter_type,
+            ell_filter_lmin=ell_lmin,
+            ell_filter_lmax=ell_lmax,
         )
 

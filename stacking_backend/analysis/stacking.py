@@ -160,50 +160,72 @@ class PatchStacker:
                        rejection_stats, valid_weights=None):
         """
         Compute the final stacked patch.
-        
+
         If valid_weights is None:
             - Use simple unweighted mean (backwards compatible).
         If valid_weights is not None:
-            - Use Tanimura-style weighted stack:
-              T_stack(x,y) = sum_i w_i T_i(x,y) / sum_i |w_i| over valid pixels.
+            - Use Tanimura-style weighted stack with variance normalization:
+              T_stack(x,y) = sum_i (w_i/σᵢ²) T_i(x,y) / sum_i |w_i|/σᵢ² over valid pixels.
         """
         patch_stack = np.array(valid_patches)  # shape: (N, ny, nx)
-        
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            
+
             if valid_weights is None:
                 # Unweighted stack (tSZ / legacy behaviour)
                 stacked_patch = np.nanmean(patch_stack, axis=0)
                 stacked_std = np.nanstd(patch_stack, axis=0)
                 n_contributing = np.sum(np.isfinite(patch_stack), axis=0)
             else:
-                # Weighted stack (e.g. kSZ with velocity weights)
+                # Weighted stack with variance normalization (Tanimura et al. kSZ method)
                 w = np.asarray(valid_weights)  # shape: (N,)
-                w2d = w[:, None, None]        # broadcast to (N, ny, nx)
-                
+
+                # Compute variance for each patch (σᵢ² in Tanimura's notation)
+                variances = np.zeros(len(valid_patches))
+                for i, patch in enumerate(valid_patches):
+                    finite_values = patch[np.isfinite(patch)]
+                    if len(finite_values) > 0:
+                        variances[i] = np.var(finite_values)
+                    else:
+                        variances[i] = 1.0  # Default to avoid division by zero
+
+                # Replace any zero or very small variances to avoid division issues
+                variances[variances < 1e-10] = 1e-10
+
+                # Create 2D weight arrays with variance normalization
+                # Weight is w_i / σᵢ² for numerator, |w_i| / σᵢ² for denominator
+                weights_over_var = w / variances  # shape: (N,)
+                weights_over_var_2d = weights_over_var[:, None, None]  # shape: (N, ny, nx)
+
+                abs_weights_over_var = np.abs(w) / variances  # shape: (N,)
+                abs_weights_over_var_2d = abs_weights_over_var[:, None, None]  # shape: (N, ny, nx)
+
                 finite_mask = np.isfinite(patch_stack)
-                
-                # Numerator: sum_i w_i * T_i over valid pixels
-                num = np.nansum(patch_stack * w2d, axis=0)
-                
-                # Denominator per pixel: sum_i |w_i| for clusters that contribute at that pixel
-                den = np.sum(np.abs(w2d) * finite_mask, axis=0)
-                
+
+                # Numerator: sum_i (w_i/σᵢ²) * T_i over valid pixels
+                num = np.nansum(patch_stack * weights_over_var_2d, axis=0)
+
+                # Denominator per pixel: sum_i |w_i|/σᵢ² for clusters that contribute at that pixel
+                den = np.sum(abs_weights_over_var_2d * finite_mask, axis=0)
+
                 stacked_patch = np.full_like(num, np.nan, dtype=float)
                 valid = den > 0
                 stacked_patch[valid] = num[valid] / den[valid]
-                
+
                 # For diagnostics: how many clusters contributed at each pixel
                 n_contributing = np.sum(finite_mask, axis=0)
-                
-                # We keep a simple std definition; uncertainties on profiles
-                # should come from bootstrap, not per-pixel std alone.
+
+                # Keep a simple std definition for diagnostics
                 stacked_std = np.nanstd(patch_stack, axis=0)
-        
+
+                # Log the variance weighting info
+                print(f"   Variance-weighted stack: mean variance = {np.mean(variances):.2e}")
+                print(f"   Variance range: [{np.min(variances):.2e}, {np.max(variances):.2e}]")
+
         # Calculate standard error
         stacked_error = stacked_std / np.sqrt(np.maximum(n_contributing, 1))
-        
+
         stacking_info = {
             'n_patches': len(valid_patches),
             'n_rejected': len(valid_coords) + sum(rejection_stats.values()) - len(valid_patches),
@@ -214,13 +236,13 @@ class PatchStacker:
             'stacked_std': stacked_std,
             'stacked_error': stacked_error,
             'n_contributing': n_contributing,
-            'weights_used': valid_weights is not None
+            'weights_used': valid_weights is not None,
+            'variance_weighted': valid_weights is not None  # Flag for Tanimura-style weighting
         }
-        
+
         print(f"   Stack dimensions: {stacked_patch.shape}")
         print(f"   Valid pixel range: {np.nanmin(n_contributing)}-{np.nanmax(n_contributing)} patches")
         if valid_weights is not None:
-            print(f"   Weighted stack: using {len(valid_patches)} weights")
-        
-        return stacked_patch, stacking_info
+            print(f"   Weighted stack: using {len(valid_patches)} weights with variance normalization")
 
+        return stacked_patch, stacking_info
