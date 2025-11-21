@@ -17,10 +17,12 @@ class AnalysisParameters:
     
     # Stacking parameters
     max_patches: Optional[int] = None
+    scaling_mode: str = 'r500'  # 'r500' or 'angular'
     
     # Profile calculation parameters
     n_radial_bins: int = 20
-    max_radius_deg: Optional[float] = None
+    max_radius_deg: Optional[float] = None  # For angular mode
+    max_radius_r500: float = 5.0  # For r/r500 mode
     
     # Quality control parameters
     min_inner_pixels: int = 10
@@ -58,7 +60,7 @@ class AnalysisParameters:
         if self.npix <= 0:
             raise ValueError(f"npix must be positive, got {self.npix}")
         
-        # Aperture parameters
+        # R500 factor validation
         if self.inner_r500_factor <= 0:
             raise ValueError(f"inner_r500_factor must be positive, got {self.inner_r500_factor}")
         
@@ -67,6 +69,10 @@ class AnalysisParameters:
         
         if not 0 < self.min_coverage <= 1:
             raise ValueError(f"min_coverage must be in (0, 1], got {self.min_coverage}")
+        
+        # Scaling mode validation
+        if self.scaling_mode not in ['r500', 'angular']:
+            raise ValueError(f"scaling_mode must be 'r500' or 'angular', got {self.scaling_mode}")
         
         # Bootstrap parameters
         if self.n_bootstrap < 10:
@@ -77,8 +83,18 @@ class AnalysisParameters:
     
     @classmethod
     def get_default(cls):
-        """Get default analysis parameters"""
+        """Get default analysis parameters (r/r500 mode)"""
         return cls()
+    
+    @classmethod
+    def for_angular_mode(cls):
+        """Get parameters for angular mode analysis"""
+        return cls(
+            scaling_mode='angular',
+            max_radius_deg=5.0,
+            patch_size_deg=15.0,
+            npix=256
+        )
     
     @classmethod
     def for_mass_scaling(cls):
@@ -91,7 +107,9 @@ class AnalysisParameters:
             min_coverage=0.8,
             n_radial_bins=30,
             n_bootstrap=1000,
-            n_random_pointings=1000
+            n_random_pointings=1000,
+            scaling_mode='r500',
+            max_radius_r500=5.0
         )
     
     @classmethod
@@ -101,5 +119,6 @@ class AnalysisParameters:
             patch_size_deg=10.0,
             npix=128,
             n_bootstrap=100,
-            n_random_pointings=100
+            n_random_pointings=100,
+            scaling_mode='r500'
         )

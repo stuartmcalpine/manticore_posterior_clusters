@@ -11,7 +11,7 @@ from .validation import NullTestValidator
 import threading
 
 class ClusterAnalysisPipeline:
-    """Main analysis pipeline with corrected significance calculation"""
+    """Main analysis pipeline with support for r/r500 and angular scaling modes"""
     
     def __init__(self, map_config=None):
         """
@@ -60,11 +60,12 @@ class ClusterAnalysisPipeline:
     def run_individual_r500_analysis_with_validation(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                                                patch_size_deg=15.0, npix=256, max_patches=None,
                                                min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
-                                               n_bootstrap=500, n_random=500, weights=None, max_radius_r500=5,
+                                               n_bootstrap=500, n_random=500, weights=None, 
+                                               max_radius_r500=5, max_radius_deg=None,
                                                subtract_background=True, bg_inner_radius_deg=5.0,
-                                               bg_outer_radius_deg=7.0):
+                                               bg_outer_radius_deg=7.0, scaling_mode='r500'):
         """
-        Full analysis pipeline with corrected error propagation and significance calculation.
+        Full analysis pipeline with support for r/r500 or angular scaling modes.
         
         Parameters
         ----------
@@ -72,14 +73,19 @@ class ClusterAnalysisPipeline:
             List of cluster coordinates (lon, lat, r500[, z, ...])
         weights : array-like or None
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
-            If provided, both the stacked patch and the scalar estimator used
-            for significance will be weighted in a Tanimura-like fashion.
         subtract_background : bool
             Whether to subtract background in stacking (default: True)
         bg_inner_radius_deg : float
             Inner radius for background annulus in degrees (default: 5.0)  
         bg_outer_radius_deg : float
             Outer radius for background annulus in degrees (default: 7.0)
+        scaling_mode : str
+            'r500': Rescale patches to r/r500 units before stacking (Tanimura method)
+            'angular': Stack in native angular (degree) coordinates
+        max_radius_r500 : float
+            Maximum radius for r/r500 mode (default: 5)
+        max_radius_deg : float, optional
+            Maximum radius for angular mode (default: patch_size_deg/2)
         """
 
         # Input validation
@@ -94,8 +100,9 @@ class ClusterAnalysisPipeline:
                     f"({len(weights)} vs {len(coord_list)})"
                 )
         
-        print("🚀 CLUSTER ANALYSIS PIPELINE (Corrected Significance)")
+        print("🚀 CLUSTER ANALYSIS PIPELINE")
         print("="*70)
+        print(f"⚙️  Scaling mode: {scaling_mode.upper()}")
         
         # Step 1: Calculate individual cluster measurements with errors
         print(f"\n🔍 Step 1: Individual cluster measurements with error estimation...")
@@ -106,13 +113,13 @@ class ClusterAnalysisPipeline:
             patch_size_deg=patch_size_deg,
             npix=npix,
             min_coverage=min_coverage,
-            weights=weights  # store per-cluster weights in results if provided
+            weights=weights
         )
         
         if not individual_results:
             raise ValueError('No valid individual measurements obtained')
         
-        # Extract measurements and errors (always unweighted here: raw delta_y)
+        # Extract measurements and errors
         individual_delta_y = np.array([result['delta_y'] for result in individual_results])
         individual_errors = np.array([result['delta_y_error'] for result in individual_results])
         valid_coords = [result['coords'] for result in individual_results]
@@ -120,15 +127,12 @@ class ClusterAnalysisPipeline:
         # Extract weights corresponding to valid clusters, if provided
         if weights is not None:
             individual_weights = np.array([result.get('weight', np.nan) for result in individual_results])
-            # Filter out any NaNs just in case (shouldn't normally happen)
             if np.any(~np.isfinite(individual_weights)):
                 raise RuntimeError("Non-finite weights encountered in individual_results")
         else:
             individual_weights = None
         
-        # Define the estimator used for bootstrap & significance:
-        # - If no weights: use raw delta_y (tSZ-like).
-        # - If weights: use weighted kSZ-like estimator w_i * delta_y_i.
+        # Define the estimator used for bootstrap & significance
         if individual_weights is None:
             measurement_values = individual_delta_y
             measurement_errors = individual_errors
@@ -136,7 +140,7 @@ class ClusterAnalysisPipeline:
         else:
             measurement_values = individual_delta_y * individual_weights
             measurement_errors = individual_errors * np.abs(individual_weights)
-            measurement_label = "weighted_delta"  # e.g. v * delta_T
+            measurement_label = "weighted_delta"
         
         # Step 2: Robust Bootstrap with proper error propagation
         print(f"\n🔄 Step 2: Robust bootstrap error estimation ({n_bootstrap} samples)...")
@@ -145,23 +149,25 @@ class ClusterAnalysisPipeline:
             n_bootstrap
         )
         
-        # Step 3: Create stacked patch (unweighted for tSZ, weighted for kSZ)
-        print(f"\n📚 Step 3: Stacking patches...")
+        # Step 3: Create stacked patch with chosen scaling mode
+        print(f"\n📚 Step 3: Stacking patches in {scaling_mode.upper()} mode...")
         stacked_patch, stacking_info, stack_rejection_stats = self.stacker.stack_patches(
             coord_list=valid_coords,
             patch_size_deg=patch_size_deg,
             npix=npix,
             min_coverage=min_coverage,
             max_patches=max_patches,
-            weights=individual_weights,  # None for tSZ, velocities for kSZ
+            weights=individual_weights,
             subtract_background=subtract_background,
             bg_inner_radius_deg=bg_inner_radius_deg,
-            bg_outer_radius_deg=bg_outer_radius_deg
+            bg_outer_radius_deg=bg_outer_radius_deg,
+            scaling_mode=scaling_mode,
+            max_radius_r500=max_radius_r500
         )
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')
         
-        # Step 4: Null tests with random pointings (optionally weight-aware)
+        # Step 4: Null tests with random pointings
         null_results = None
         if run_null_tests:
             print(f"\n🎯 Step 4: Null tests with random pointings ({n_random} samples)...")
@@ -173,7 +179,7 @@ class ClusterAnalysisPipeline:
                 patch_size_deg=patch_size_deg,
                 npix=npix,
                 min_coverage=min_coverage,
-                weights=individual_weights  # None for tSZ, velocities for kSZ
+                weights=individual_weights
             )
         
         # Step 5: Calculate corrected significance for the chosen estimator
@@ -182,18 +188,30 @@ class ClusterAnalysisPipeline:
             measurement_values, measurement_errors, bootstrap_results, null_results
         )
         
-        # Step 6: Calculate radial profile
-        print(f"\n📊 Step 6: Radial profile in r/r500 units...")
-        r500_values = [result['r500_deg'] for result in individual_results]
-        median_r500_deg = np.median(r500_values)
+        # Step 6: Calculate radial profile in appropriate coordinate system
+        print(f"\n📊 Step 6: Radial profile calculation...")
         
-        radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile_scaled(
-            stacked_patch=stacked_patch,
-            patch_size_deg=patch_size_deg,
-            r500_deg=median_r500_deg,
-            n_radial_bins=n_radial_bins,
-            max_radius_r500=max_radius_r500,
-        )
+        if scaling_mode == 'r500':
+            # Patch is already in r/r500 units, compute profile directly
+            radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
+                stacked_patch=stacked_patch,
+                patch_size_deg=patch_size_deg,
+                n_radial_bins=n_radial_bins,
+                scaling_mode='r500',
+                max_radius_r500=stacking_info['max_radius_r500']
+            )
+            profile_units = 'r/r500'
+        else:
+            # Angular mode
+            max_rad_deg = max_radius_deg if max_radius_deg is not None else patch_size_deg/2
+            radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
+                stacked_patch=stacked_patch,
+                patch_size_deg=patch_size_deg,
+                n_radial_bins=n_radial_bins,
+                max_radius_deg=max_rad_deg,
+                scaling_mode='angular'
+            )
+            profile_units = 'degrees'
         
         # Step 7: Compile results
         results = self._compile_corrected_results(
@@ -202,7 +220,7 @@ class ClusterAnalysisPipeline:
             bootstrap_results, significance_results, stacked_patch, stacking_info,
             radii, profile, profile_errors, profile_counts,
             rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-            inner_r500_factor, outer_r500_factor, null_results
+            inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units
         )
         
         self._print_corrected_summary(results)
@@ -229,7 +247,6 @@ class ClusterAnalysisPipeline:
             bootstrap_means.append(bootstrap_mean)
             
             # Calculate combined error for this bootstrap sample
-            # Includes both measurement error and sample variance
             measurement_var = np.mean(bootstrap_errors**2)
             sample_var = np.var(bootstrap_values)
             combined_error = np.sqrt(measurement_var/n_clusters + sample_var/n_clusters)
@@ -273,7 +290,7 @@ class ClusterAnalysisPipeline:
     def _calculate_corrected_significance(self, values, errors, bootstrap_results, null_results):
         """Calculate corrected significance with proper error propagation and null correction"""
         
-        # Get signal estimate (mean of chosen estimator)
+        # Get signal estimate
         signal = bootstrap_results['bootstrap_mean']
         
         # Correct for null bias if significant
@@ -283,28 +300,22 @@ class ClusterAnalysisPipeline:
             null_bias = null_results['random_mean']
             null_std = null_results['random_std']
             
-            # Apply bias correction if null mean is significantly different from zero
-            # Use 3-sigma threshold to avoid overcorrecting for noise
             if np.abs(null_bias) > null_std / 3:
                 null_corrected_signal = signal - null_bias
                 print(f"   📊 Applying null bias correction: {null_bias:.2e}")
             else:
                 print(f"   ✅ Null bias negligible: {null_bias:.2e} ± {null_std:.2e}")
         
-        # 1. Simple significance (signal/error)
+        # Calculate various significance metrics
         simple_significance = signal / bootstrap_results['total_error']
-        
-        # 2. Null-corrected significance
         null_corrected_significance = null_corrected_signal / bootstrap_results['total_error']
         
-        # 3. Significance relative to null distribution
         null_relative_significance = None
         if null_results is not None:
             null_std = null_results['random_std']
             if null_std > 0:
                 null_relative_significance = (signal - null_bias) / null_std
         
-        # 4. Conservative significance (using larger error estimate)
         conservative_error = bootstrap_results['total_error']
         if null_results is not None and null_results['random_std'] > conservative_error:
             conservative_error = null_results['random_std']
@@ -319,7 +330,7 @@ class ClusterAnalysisPipeline:
             'null_corrected_significance': null_corrected_significance,
             'null_relative_significance': null_relative_significance,
             'conservative_significance': conservative_significance,
-            'primary_significance': null_corrected_significance  # Use this as main result
+            'primary_significance': null_corrected_significance
         }
     
     def _compile_corrected_results(self, individual_results, individual_delta_y, individual_errors,
@@ -327,8 +338,8 @@ class ClusterAnalysisPipeline:
                                   bootstrap_results, significance_results, stacked_patch, stacking_info,
                                   radii, profile, profile_errors, profile_counts,
                                   rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-                                  inner_r500_factor, outer_r500_factor, null_results):
-        """Compile results with corrected error estimates and significance"""
+                                  inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units):
+        """Compile results with scaling mode information"""
         
         # Calculate R500 statistics
         r500_values = [result['r500_deg'] for result in individual_results]
@@ -336,18 +347,17 @@ class ClusterAnalysisPipeline:
         inner_radii = [result['inner_radius_deg'] for result in individual_results]
         outer_radii = [result['outer_radius_deg'] for result in individual_results]
         
-        # Book-keeping for weights & estimator type
         weighted_mode = individual_weights is not None
         
         return {
             'success': True,
             
-            # Main measurements with corrected errors (for chosen estimator)
+            # Main measurements
             'mean_delta_y': significance_results['corrected_signal'],
             'error_mean': significance_results['total_error'],
             'significance': significance_results['primary_significance'],
             
-            # Detailed significance metrics
+            # Significance metrics
             'significance_metrics': significance_results,
             
             # Error decomposition
@@ -366,7 +376,7 @@ class ClusterAnalysisPipeline:
             # Validation results
             'null_results': null_results,
             
-            # Individual cluster results with errors (unweighted)
+            # Individual cluster results
             'individual_results': individual_results,
             'individual_measurements': individual_delta_y.tolist(),
             'individual_errors': individual_errors.tolist(),
@@ -384,11 +394,12 @@ class ClusterAnalysisPipeline:
             'stacked_patch': stacked_patch,
             'stacking_info': stacking_info,
             
-            # Radial profile (in r/r500 units)
+            # Radial profile
             'profile_radii': radii,
             'profile_mean': profile,
             'profile_errors': profile_errors,
             'profile_counts': profile_counts,
+            'profile_units': profile_units,
             
             # R500 statistics
             'r500_values': r500_values,
@@ -408,18 +419,17 @@ class ClusterAnalysisPipeline:
             'npix': npix,
             'inner_r500_factor': inner_r500_factor,
             'outer_r500_factor': outer_r500_factor,
+            'scaling_mode': scaling_mode,
             
             # Error type flag
             'error_type': 'robust_combined',
             'analysis_version': '2.0_corrected',
-            
-            # Mode info
             'weighted_mode': weighted_mode
         }
     
     def _print_corrected_summary(self, results):
-        """Print analysis summary with corrected statistics"""
-        print(f"\n🎯 CORRECTED ANALYSIS RESULTS:")
+        """Print analysis summary with scaling mode information"""
+        print(f"\n🎯 ANALYSIS RESULTS:")
         print("="*50)
         
         sig_metrics = results['significance_metrics']
@@ -459,10 +469,14 @@ class ClusterAnalysisPipeline:
         print(f"\n📏 Sample Statistics:")
         print(f"   Valid clusters: {results['n_measurements']}/{results['n_input_coords']}")
         print(f"   Median R₅₀₀: {results['r500_median']:.3f}°")
-        if results['weighted_mode']:
-            print(f"\n⚙️  Weighted mode: True (e.g. kSZ-style, using weights in stacking and estimator)")
-        else:
-            print(f"\n⚙️  Weighted mode: False (unweighted tSZ-style analysis)")
         
-        print(f"\n🎉 Analysis complete with corrected significance calculation!")
-
+        print(f"\n⚙️  Analysis Configuration:")
+        print(f"   Scaling mode: {results['scaling_mode'].upper()}")
+        print(f"   Profile units: {results['profile_units']}")
+        print(f"   Stacking coordinate system: {results['stacking_info']['coord_system']}")
+        if results['weighted_mode']:
+            print(f"   Weighted mode: True (using weights in stacking and estimator)")
+        else:
+            print(f"   Weighted mode: False (unweighted analysis)")
+        
+        print(f"\n🎉 Analysis complete!")
