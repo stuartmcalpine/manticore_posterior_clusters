@@ -64,7 +64,7 @@ class ClusterAnalysisPipeline:
                                                max_radius_r500=5, max_radius_deg=None,
                                                subtract_background=True, bg_inner_radius_deg=5.0,
                                                bg_outer_radius_deg=7.0, scaling_mode='r500',
-                                               return_individual_profiles=False):
+                                               return_individual_profiles=False, analysis_mode='tsz'):
         """
         Full analysis pipeline with support for r/r500 or angular scaling modes.
         
@@ -89,11 +89,19 @@ class ClusterAnalysisPipeline:
             Maximum radius for angular mode (default: patch_size_deg/2)
         return_individual_profiles : bool
             If True, compute and return radial profile for each individual cluster patch
+        analysis_mode : str
+            'tsz': Full tSZ analysis with aperture photometry, bootstrap, significance (default)
+            'ksz': Streamlined kSZ analysis - only radial profiles, skip aperture photometry
         """
 
         # Input validation
         InputValidator.validate_coord_list(coord_list)
         InputValidator.validate_analysis_params(patch_size_deg, npix, inner_r500_factor, outer_r500_factor, min_coverage)
+        
+        if analysis_mode not in ['tsz', 'ksz']:
+            raise ValueError(f"analysis_mode must be 'tsz' or 'ksz', got '{analysis_mode}'")
+        
+        profile_only_mode = (analysis_mode == 'ksz')
         
         if weights is not None:
             weights = np.asarray(weights)
@@ -105,12 +113,15 @@ class ClusterAnalysisPipeline:
         
         print("🚀 CLUSTER ANALYSIS PIPELINE")
         print("="*70)
+        print(f"⚙️  Analysis mode: {analysis_mode.upper()}")
         print(f"⚙️  Scaling mode: {scaling_mode.upper()}")
         if return_individual_profiles:
             print(f"⚙️  Individual profiles: ENABLED")
+        if profile_only_mode:
+            print(f"⚙️  Profile-only mode: Skipping aperture photometry, bootstrap, and null tests")
         
-        # Step 1: Calculate individual cluster measurements with errors
-        print(f"\n🔍 Step 1: Individual cluster measurements with error estimation...")
+        # Step 1: Calculate individual cluster measurements (with or without aperture photometry)
+        print(f"\n🔍 Step 1: Individual cluster processing...")
         individual_results, rejection_stats, quality_stats = self.individual_analyzer.calculate_measurements(
             coord_list=coord_list,
             inner_r500_factor=inner_r500_factor,
@@ -118,15 +129,13 @@ class ClusterAnalysisPipeline:
             patch_size_deg=patch_size_deg,
             npix=npix,
             min_coverage=min_coverage,
-            weights=weights
+            weights=weights,
+            profile_only_mode=profile_only_mode
         )
         
         if not individual_results:
             raise ValueError('No valid individual measurements obtained')
         
-        # Extract measurements and errors
-        individual_delta_y = np.array([result['delta_y'] for result in individual_results])
-        individual_errors = np.array([result['delta_y_error'] for result in individual_results])
         valid_coords = [result['coords'] for result in individual_results]
         
         # Extract weights corresponding to valid clusters, if provided
@@ -137,25 +146,66 @@ class ClusterAnalysisPipeline:
         else:
             individual_weights = None
         
-        # Define the estimator used for bootstrap & significance
-        if individual_weights is None:
-            measurement_values = individual_delta_y
-            measurement_errors = individual_errors
-            measurement_label = "delta_y"
+        # For kSZ mode, skip steps 2-5 (bootstrap, null tests, significance)
+        bootstrap_results = None
+        null_results = None
+        significance_results = None
+        individual_delta_y = None
+        individual_errors = None
+        measurement_values = None
+        measurement_errors = None
+        measurement_label = None
+        
+        if not profile_only_mode:
+            # tSZ mode: full analysis pipeline
+            
+            # Extract measurements and errors
+            individual_delta_y = np.array([result['delta_y'] for result in individual_results])
+            individual_errors = np.array([result['delta_y_error'] for result in individual_results])
+            
+            # Define the estimator used for bootstrap & significance
+            if individual_weights is None:
+                measurement_values = individual_delta_y
+                measurement_errors = individual_errors
+                measurement_label = "delta_y"
+            else:
+                measurement_values = individual_delta_y * individual_weights
+                measurement_errors = individual_errors * np.abs(individual_weights)
+                measurement_label = "weighted_delta"
+            
+            # Step 2: Robust Bootstrap with proper error propagation
+            print(f"\n🔄 Step 2: Robust bootstrap error estimation ({n_bootstrap} samples)...")
+            bootstrap_results = self._robust_bootstrap_analysis(
+                individual_results, measurement_values, measurement_errors,
+                n_bootstrap
+            )
+            
+            # Step 3: Null tests (if requested)
+            if run_null_tests:
+                print(f"\n🎯 Step 3: Null tests with random pointings ({n_random} samples)...")
+                null_results = self.validator.run_null_tests(
+                    n_random_pointings=n_random,
+                    coord_list=valid_coords,
+                    inner_r500_factor=inner_r500_factor,
+                    outer_r500_factor=outer_r500_factor,
+                    patch_size_deg=patch_size_deg,
+                    npix=npix,
+                    min_coverage=min_coverage,
+                    weights=individual_weights
+                )
+            
+            # Step 4: Calculate corrected significance
+            print(f"\n📈 Step 4: Computing corrected detection significance...")
+            significance_results = self._calculate_corrected_significance(
+                measurement_values, measurement_errors, bootstrap_results, null_results
+            )
         else:
-            measurement_values = individual_delta_y * individual_weights
-            measurement_errors = individual_errors * np.abs(individual_weights)
-            measurement_label = "weighted_delta"
+            # kSZ mode: skip bootstrap and null tests
+            print(f"\n⏭️  Steps 2-4: Skipped (profile-only mode)")
         
-        # Step 2: Robust Bootstrap with proper error propagation
-        print(f"\n🔄 Step 2: Robust bootstrap error estimation ({n_bootstrap} samples)...")
-        bootstrap_results = self._robust_bootstrap_analysis(
-            individual_results, measurement_values, measurement_errors,
-            n_bootstrap
-        )
-        
-        # Step 3: Create stacked patch with chosen scaling mode
-        print(f"\n📚 Step 3: Stacking patches in {scaling_mode.upper()} mode...")
+        # Step N: Create stacked patch
+        step_num = 3 if profile_only_mode else 5
+        print(f"\n📚 Step {step_num}: Stacking patches in {scaling_mode.upper()} mode...")
         stacked_patch, stacking_info, stack_rejection_stats = self.stacker.stack_patches(
             coord_list=valid_coords,
             patch_size_deg=patch_size_deg,
@@ -174,29 +224,9 @@ class ClusterAnalysisPipeline:
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')
         
-        # Step 4: Null tests with random pointings
-        null_results = None
-        if run_null_tests:
-            print(f"\n🎯 Step 4: Null tests with random pointings ({n_random} samples)...")
-            null_results = self.validator.run_null_tests(
-                n_random_pointings=n_random,
-                coord_list=valid_coords,
-                inner_r500_factor=inner_r500_factor,
-                outer_r500_factor=outer_r500_factor,
-                patch_size_deg=patch_size_deg,
-                npix=npix,
-                min_coverage=min_coverage,
-                weights=individual_weights
-            )
-        
-        # Step 5: Calculate corrected significance for the chosen estimator
-        print(f"\n📈 Step 5: Computing corrected detection significance...")
-        significance_results = self._calculate_corrected_significance(
-            measurement_values, measurement_errors, bootstrap_results, null_results
-        )
-        
-        # Step 6: Calculate radial profile in appropriate coordinate system
-        print(f"\n📊 Step 6: Radial profile calculation...")
+        # Step N+1: Calculate radial profile
+        step_num += 1
+        print(f"\n📊 Step {step_num}: Radial profile calculation...")
         
         if scaling_mode == 'r500':
             # Patch is already in r/r500 units, compute profile directly
@@ -220,17 +250,18 @@ class ClusterAnalysisPipeline:
             )
             profile_units = 'degrees'
         
-        # Step 7: Compile results
-        results = self._compile_corrected_results(
+        # Step N+2: Compile results
+        results = self._compile_results(
             individual_results, individual_delta_y, individual_errors,
             individual_weights, measurement_values, measurement_errors, measurement_label,
             bootstrap_results, significance_results, stacked_patch, stacking_info,
             radii, profile, profile_errors, profile_counts,
             rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-            inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units
+            inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units,
+            profile_only_mode
         )
         
-        self._print_corrected_summary(results)
+        self._print_summary(results, profile_only_mode)
         
         return results
     
@@ -340,65 +371,35 @@ class ClusterAnalysisPipeline:
             'primary_significance': null_corrected_significance
         }
     
-    def _compile_corrected_results(self, individual_results, individual_delta_y, individual_errors,
-                                  individual_weights, measurement_values, measurement_errors, measurement_label,
-                                  bootstrap_results, significance_results, stacked_patch, stacking_info,
-                                  radii, profile, profile_errors, profile_counts,
-                                  rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-                                  inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units):
+    def _compile_results(self, individual_results, individual_delta_y, individual_errors,
+                        individual_weights, measurement_values, measurement_errors, measurement_label,
+                        bootstrap_results, significance_results, stacked_patch, stacking_info,
+                        radii, profile, profile_errors, profile_counts,
+                        rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
+                        inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units,
+                        profile_only_mode):
         """Compile results with scaling mode information"""
         
         # Calculate R500 statistics
         r500_values = [result['r500_deg'] for result in individual_results]
         r500_stats = StatisticsCalculator.calculate_r500_statistics(r500_values)
-        inner_radii = [result['inner_radius_deg'] for result in individual_results]
-        outer_radii = [result['outer_radius_deg'] for result in individual_results]
+        
+        if not profile_only_mode:
+            inner_radii = [result['inner_radius_deg'] for result in individual_results]
+            outer_radii = [result['outer_radius_deg'] for result in individual_results]
+        else:
+            inner_radii = None
+            outer_radii = None
         
         weighted_mode = individual_weights is not None
         
         # Extract individual profiles from stacking_info if available
         individual_profiles = stacking_info.get('individual_profiles', None)
         
-        return {
+        # Base results (always included)
+        results = {
             'success': True,
-            
-            # Main measurements
-            'mean_delta_y': significance_results['corrected_signal'],
-            'error_mean': significance_results['total_error'],
-            'significance': significance_results['primary_significance'],
-            
-            # Significance metrics
-            'significance_metrics': significance_results,
-            
-            # Error decomposition
-            'error_decomposition': {
-                'sample_variance': bootstrap_results['sample_variance'],
-                'measurement_variance': bootstrap_results['measurement_variance'],
-                'total_variance': bootstrap_results['total_variance'],
-                'sample_std': np.sqrt(bootstrap_results['sample_variance']),
-                'measurement_std': np.sqrt(bootstrap_results['measurement_variance']),
-                'total_std': bootstrap_results['total_error']
-            },
-            
-            # Bootstrap results
-            'bootstrap_results': bootstrap_results,
-            
-            # Validation results
-            'null_results': null_results,
-            
-            # Individual cluster results
-            'individual_results': individual_results,
-            'individual_measurements': individual_delta_y.tolist(),
-            'individual_errors': individual_errors.tolist(),
-            
-            # Weighted estimator bookkeeping
-            'weights': individual_weights.tolist() if individual_weights is not None else None,
-            'estimator_values': measurement_values.tolist(),
-            'estimator_errors': measurement_errors.tolist(),
-            'estimator_label': measurement_label,
-            
-            # Quality metrics
-            'quality_stats': quality_stats,
+            'analysis_mode': 'ksz' if profile_only_mode else 'tsz',
             
             # Stacked patch data
             'stacked_patch': stacked_patch,
@@ -418,8 +419,6 @@ class ClusterAnalysisPipeline:
             'r500_values': r500_values,
             'r500_median': r500_stats['median'],
             'r500_range': r500_stats['range'],
-            'inner_radii_range': (np.min(inner_radii), np.max(inner_radii)),
-            'outer_radii_range': (np.min(outer_radii), np.max(outer_radii)),
             
             # Sample information
             'n_measurements': len(individual_results),
@@ -434,61 +433,123 @@ class ClusterAnalysisPipeline:
             'outer_r500_factor': outer_r500_factor,
             'scaling_mode': scaling_mode,
             
-            # Error type flag
-            'error_type': 'robust_combined',
-            'analysis_version': '2.0_corrected',
-            'weighted_mode': weighted_mode
+            'weighted_mode': weighted_mode,
         }
+        
+        # Add tSZ-specific results if in tSZ mode
+        if not profile_only_mode:
+            results.update({
+                # Main measurements
+                'mean_delta_y': significance_results['corrected_signal'],
+                'error_mean': significance_results['total_error'],
+                'significance': significance_results['primary_significance'],
+                
+                # Significance metrics
+                'significance_metrics': significance_results,
+                
+                # Error decomposition
+                'error_decomposition': {
+                    'sample_variance': bootstrap_results['sample_variance'],
+                    'measurement_variance': bootstrap_results['measurement_variance'],
+                    'total_variance': bootstrap_results['total_variance'],
+                    'sample_std': np.sqrt(bootstrap_results['sample_variance']),
+                    'measurement_std': np.sqrt(bootstrap_results['measurement_variance']),
+                    'total_std': bootstrap_results['total_error']
+                },
+                
+                # Bootstrap results
+                'bootstrap_results': bootstrap_results,
+                
+                # Validation results
+                'null_results': null_results,
+                
+                # Individual cluster results
+                'individual_results': individual_results,
+                'individual_measurements': individual_delta_y.tolist(),
+                'individual_errors': individual_errors.tolist(),
+                
+                # Weighted estimator bookkeeping
+                'weights': individual_weights.tolist() if individual_weights is not None else None,
+                'estimator_values': measurement_values.tolist(),
+                'estimator_errors': measurement_errors.tolist(),
+                'estimator_label': measurement_label,
+                
+                # Quality metrics
+                'quality_stats': quality_stats,
+                
+                'inner_radii_range': (np.min(inner_radii), np.max(inner_radii)),
+                'outer_radii_range': (np.min(outer_radii), np.max(outer_radii)),
+                
+                # Error type flag
+                'error_type': 'robust_combined',
+                'analysis_version': '2.0_corrected',
+            })
+        else:
+            # kSZ mode: minimal results
+            results.update({
+                'individual_results': individual_results,
+                'weights': individual_weights.tolist() if individual_weights is not None else None,
+                'quality_stats': None,
+            })
+        
+        return results
     
-    def _print_corrected_summary(self, results):
+    def _print_summary(self, results, profile_only_mode):
         """Print analysis summary with scaling mode information"""
         print(f"\n🎯 ANALYSIS RESULTS:")
         print("="*50)
         
-        sig_metrics = results['significance_metrics']
-        error_decomp = results['error_decomposition']
-        
-        print(f"📊 Signal Detection (estimator: {results['estimator_label']}):")
-        print(f"   Raw signal: {sig_metrics['signal']:.2e}")
-        if sig_metrics['null_bias'] != 0:
-            print(f"   Null bias: {sig_metrics['null_bias']:.2e}")
-        print(f"   Corrected signal: {sig_metrics['corrected_signal']:.2e}")
-        
-        print(f"\n📊 Error Budget:")
-        print(f"   Sample std: {error_decomp['sample_std']:.2e} ({error_decomp['sample_variance']/error_decomp['total_variance']*100:.1f}%)")
-        print(f"   Measurement std: {error_decomp['measurement_std']:.2e} ({error_decomp['measurement_variance']/error_decomp['total_variance']*100:.1f}%)")
-        print(f"   Total error: {error_decomp['total_std']:.2e}")
-        
-        print(f"\n📊 Detection Significance:")
-        print(f"   Primary (corrected): {sig_metrics['primary_significance']:.2f}σ")
-        print(f"   Simple (uncorrected): {sig_metrics['simple_significance']:.2f}σ")
-        if sig_metrics['null_relative_significance'] is not None:
-            print(f"   Relative to null: {sig_metrics['null_relative_significance']:.2f}σ")
-        print(f"   Conservative: {sig_metrics['conservative_significance']:.2f}σ")
-        
-        if results['bootstrap_results']['confidence_interval_68']:
-            ci_68 = results['bootstrap_results']['confidence_interval_68']
-            ci_95 = results['bootstrap_results']['confidence_interval_95']
-            print(f"\n📊 Confidence Intervals:")
-            print(f"   68% CI: [{ci_68[0]:.2e}, {ci_68[1]:.2e}]")
-            print(f"   95% CI: [{ci_95[0]:.2e}, {ci_95[1]:.2e}]")
-        
-        if results['quality_stats']:
-            qs = results['quality_stats']
-            print(f"\n📊 Measurement Quality:")
-            print(f"   Mean S/N per cluster: {qs['mean_snr']:.2f}")
-            print(f"   High S/N fraction: {qs['high_snr_fraction']*100:.1f}%")
+        if not profile_only_mode:
+            # tSZ mode: full summary
+            sig_metrics = results['significance_metrics']
+            error_decomp = results['error_decomposition']
+            
+            print(f"📊 Signal Detection (estimator: {results['estimator_label']}):")
+            print(f"   Raw signal: {sig_metrics['signal']:.2e}")
+            if sig_metrics['null_bias'] != 0:
+                print(f"   Null bias: {sig_metrics['null_bias']:.2e}")
+            print(f"   Corrected signal: {sig_metrics['corrected_signal']:.2e}")
+            
+            print(f"\n📊 Error Budget:")
+            print(f"   Sample std: {error_decomp['sample_std']:.2e} ({error_decomp['sample_variance']/error_decomp['total_variance']*100:.1f}%)")
+            print(f"   Measurement std: {error_decomp['measurement_std']:.2e} ({error_decomp['measurement_variance']/error_decomp['total_variance']*100:.1f}%)")
+            print(f"   Total error: {error_decomp['total_std']:.2e}")
+            
+            print(f"\n📊 Detection Significance:")
+            print(f"   Primary (corrected): {sig_metrics['primary_significance']:.2f}σ")
+            print(f"   Simple (uncorrected): {sig_metrics['simple_significance']:.2f}σ")
+            if sig_metrics['null_relative_significance'] is not None:
+                print(f"   Relative to null: {sig_metrics['null_relative_significance']:.2f}σ")
+            print(f"   Conservative: {sig_metrics['conservative_significance']:.2f}σ")
+            
+            if results['bootstrap_results']['confidence_interval_68']:
+                ci_68 = results['bootstrap_results']['confidence_interval_68']
+                ci_95 = results['bootstrap_results']['confidence_interval_95']
+                print(f"\n📊 Confidence Intervals:")
+                print(f"   68% CI: [{ci_68[0]:.2e}, {ci_68[1]:.2e}]")
+                print(f"   95% CI: [{ci_95[0]:.2e}, {ci_95[1]:.2e}]")
+            
+            if results['quality_stats']:
+                qs = results['quality_stats']
+                print(f"\n📊 Measurement Quality:")
+                print(f"   Mean S/N per cluster: {qs['mean_snr']:.2f}")
+                print(f"   High S/N fraction: {qs['high_snr_fraction']*100:.1f}%")
+        else:
+            # kSZ mode: minimal summary
+            print(f"📊 Profile-Only Mode (kSZ):")
+            print(f"   Radial profile computed successfully")
         
         print(f"\n📏 Sample Statistics:")
         print(f"   Valid clusters: {results['n_measurements']}/{results['n_input_coords']}")
         print(f"   Median R₅₀₀: {results['r500_median']:.3f}°")
         
         print(f"\n⚙️  Analysis Configuration:")
+        print(f"   Analysis mode: {results['analysis_mode'].upper()}")
         print(f"   Scaling mode: {results['scaling_mode'].upper()}")
         print(f"   Profile units: {results['profile_units']}")
         print(f"   Stacking coordinate system: {results['stacking_info']['coord_system']}")
         if results['weighted_mode']:
-            print(f"   Weighted mode: True (using weights in stacking and estimator)")
+            print(f"   Weighted mode: True (using weights in stacking)")
         else:
             print(f"   Weighted mode: False (unweighted analysis)")
         

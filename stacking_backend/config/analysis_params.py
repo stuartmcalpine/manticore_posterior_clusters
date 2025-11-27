@@ -46,6 +46,9 @@ class AnalysisParameters:
     max_reasonable_redshift: float = 3.0
     min_galactic_latitude: float = 10.0  # Avoid galactic plane
     
+    # Analysis mode
+    analysis_mode: str = 'tsz'  # 'tsz' or 'ksz'
+    
     def __post_init__(self):
         """Validate parameters after initialization"""
         self.validate()
@@ -74,6 +77,10 @@ class AnalysisParameters:
         if self.scaling_mode not in ['r500', 'angular']:
             raise ValueError(f"scaling_mode must be 'r500' or 'angular', got {self.scaling_mode}")
         
+        # Analysis mode validation
+        if self.analysis_mode not in ['tsz', 'ksz']:
+            raise ValueError(f"analysis_mode must be 'tsz' or 'ksz', got {self.analysis_mode}")
+        
         # Bootstrap parameters
         if self.n_bootstrap < 10:
             raise ValueError(f"n_bootstrap must be >= 10, got {self.n_bootstrap}")
@@ -83,7 +90,7 @@ class AnalysisParameters:
     
     @classmethod
     def get_default(cls):
-        """Get default analysis parameters (r/r500 mode)"""
+        """Get default analysis parameters (r/r500 mode, tSZ)"""
         return cls()
     
     @classmethod
@@ -97,9 +104,25 @@ class AnalysisParameters:
         )
     
     @classmethod
+    def for_ksz_analysis(cls):
+        """Get parameters optimized for kSZ analysis (profile-only, no bootstrap/null tests)"""
+        return cls(
+            analysis_mode='ksz',
+            scaling_mode='r500',
+            patch_size_deg=15.0,
+            npix=256,
+            n_radial_bins=20,
+            max_radius_r500=5.0,
+            # Bootstrap/null test parameters ignored in kSZ mode
+            n_bootstrap=0,
+            n_random_pointings=0
+        )
+    
+    @classmethod
     def for_mass_scaling(cls):
         """Get parameters optimized for mass scaling analysis"""
         return cls(
+            analysis_mode='tsz',
             patch_size_deg=20.0,
             npix=256,
             inner_r500_factor=1.0,
@@ -116,6 +139,7 @@ class AnalysisParameters:
     def for_quick_test(cls):
         """Get parameters for quick testing"""
         return cls(
+            analysis_mode='tsz',
             patch_size_deg=10.0,
             npix=128,
             n_bootstrap=100,
