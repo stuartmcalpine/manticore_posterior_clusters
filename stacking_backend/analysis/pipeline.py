@@ -63,7 +63,8 @@ class ClusterAnalysisPipeline:
                                                n_bootstrap=500, n_random=500, weights=None, 
                                                max_radius_r500=5, max_radius_deg=None,
                                                subtract_background=True, bg_inner_radius_deg=5.0,
-                                               bg_outer_radius_deg=7.0, scaling_mode='r500'):
+                                               bg_outer_radius_deg=7.0, scaling_mode='r500',
+                                               return_individual_profiles=False):
         """
         Full analysis pipeline with support for r/r500 or angular scaling modes.
         
@@ -86,6 +87,8 @@ class ClusterAnalysisPipeline:
             Maximum radius for r/r500 mode (default: 5)
         max_radius_deg : float, optional
             Maximum radius for angular mode (default: patch_size_deg/2)
+        return_individual_profiles : bool
+            If True, compute and return radial profile for each individual cluster patch
         """
 
         # Input validation
@@ -103,6 +106,8 @@ class ClusterAnalysisPipeline:
         print("🚀 CLUSTER ANALYSIS PIPELINE")
         print("="*70)
         print(f"⚙️  Scaling mode: {scaling_mode.upper()}")
+        if return_individual_profiles:
+            print(f"⚙️  Individual profiles: ENABLED")
         
         # Step 1: Calculate individual cluster measurements with errors
         print(f"\n🔍 Step 1: Individual cluster measurements with error estimation...")
@@ -162,7 +167,9 @@ class ClusterAnalysisPipeline:
             bg_inner_radius_deg=bg_inner_radius_deg,
             bg_outer_radius_deg=bg_outer_radius_deg,
             scaling_mode=scaling_mode,
-            max_radius_r500=max_radius_r500
+            max_radius_r500=max_radius_r500,
+            return_individual_profiles=return_individual_profiles,
+            n_radial_bins=n_radial_bins
         )
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')
@@ -349,6 +356,9 @@ class ClusterAnalysisPipeline:
         
         weighted_mode = individual_weights is not None
         
+        # Extract individual profiles from stacking_info if available
+        individual_profiles = stacking_info.get('individual_profiles', None)
+        
         return {
             'success': True,
             
@@ -400,6 +410,9 @@ class ClusterAnalysisPipeline:
             'profile_errors': profile_errors,
             'profile_counts': profile_counts,
             'profile_units': profile_units,
+            
+            # Individual profiles (if computed)
+            'individual_profiles': individual_profiles,
             
             # R500 statistics
             'r500_values': r500_values,
@@ -478,5 +491,8 @@ class ClusterAnalysisPipeline:
             print(f"   Weighted mode: True (using weights in stacking and estimator)")
         else:
             print(f"   Weighted mode: False (unweighted analysis)")
+        
+        if results.get('individual_profiles') is not None:
+            print(f"   Individual profiles: {len(results['individual_profiles'])} computed")
         
         print(f"\n🎉 Analysis complete!")

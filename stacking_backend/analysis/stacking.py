@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 from scipy.interpolate import RectBivariateSpline
+from .profiles import RadialProfileCalculator
 
 class PatchStacker:
     """Stack multiple patches for improved signal-to-noise with r/r500 or angular scaling"""
@@ -12,7 +13,8 @@ class PatchStacker:
                  min_coverage=0.9, max_patches=None, weights=None,
                  subtract_background=True, bg_inner_radius_deg=5.0, 
                  bg_outer_radius_deg=7.0, scaling_mode='r500', 
-                 max_radius_r500=10.0):
+                 max_radius_r500=10.0, return_individual_profiles=False,
+                 n_radial_bins=20):
         """
         Stack multiple patches with optional r/r500 rescaling
         
@@ -41,9 +43,15 @@ class PatchStacker:
             'angular': Stack in native angular (degree) coordinates
         max_radius_r500 : float
             Maximum radius in r/r500 units for rescaled stacking (only used if scaling_mode='r500')
+        return_individual_profiles : bool
+            If True, calculate and return radial profile for each individual patch
+        n_radial_bins : int
+            Number of radial bins for individual profiles (only used if return_individual_profiles=True)
         """
 
         print(f"🔄 Stacking {len(coord_list)} patches in {scaling_mode.upper()} mode...")
+        if return_individual_profiles:
+            print(f"   📊 Will compute individual radial profiles ({n_radial_bins} bins)")
         
         if weights is not None:
             weights = np.asarray(weights)
@@ -57,6 +65,7 @@ class PatchStacker:
         valid_coords = []
         valid_weights = [] if weights is not None else None
         valid_r500s = []  # Track R500 values for rescaling
+        individual_profiles = [] if return_individual_profiles else None
         rejection_stats = {'insufficient_coverage': 0, 'extraction_error': 0, 
                           'rescaling_failed': 0}
         
@@ -117,6 +126,43 @@ class PatchStacker:
                         rejection_stats['rescaling_failed'] += 1
                         continue
                 
+                # Calculate individual radial profile if requested
+                if return_individual_profiles:
+                    if scaling_mode == 'r500':
+                        radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
+                            stacked_patch=patch_data,
+                            patch_size_deg=patch_size_deg,
+                            n_radial_bins=n_radial_bins,
+                            scaling_mode='r500',
+                            max_radius_r500=max_radius_r500
+                        )
+                        profile_units = 'r/r500'
+                    else:
+                        radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
+                            stacked_patch=patch_data,
+                            patch_size_deg=patch_size_deg,
+                            n_radial_bins=n_radial_bins,
+                            scaling_mode='angular'
+                        )
+                        profile_units = 'degrees'
+                    
+                    # Store individual profile
+                    profile_dict = {
+                        'radii': radii,
+                        'profile': profile,
+                        'profile_errors': profile_errors,
+                        'profile_counts': profile_counts,
+                        'profile_units': profile_units,
+                        'cluster_index': i,
+                        'coords': coords,
+                        'r500_deg': r500_deg
+                    }
+                    
+                    if weights is not None:
+                        profile_dict['weight'] = weights[i]
+                    
+                    individual_profiles.append(profile_dict)
+                
                 valid_patches.append(patch_data)
                 valid_coords.append(coords)
                 valid_r500s.append(r500_deg)
@@ -138,6 +184,9 @@ class PatchStacker:
         if scaling_mode == 'r500':
             print(f"   Rejected: {rejection_stats['rescaling_failed']} (rescaling failed)")
         
+        if return_individual_profiles:
+            print(f"   📊 Computed {len(individual_profiles)} individual radial profiles")
+        
         # Stack patches
         stacked_patch, stacking_info = self._compute_stack(
             valid_patches, valid_coords, patch_size_deg, npix,
@@ -145,6 +194,10 @@ class PatchStacker:
             scaling_mode=scaling_mode, valid_r500s=valid_r500s,
             max_radius_r500=max_radius_r500
         )
+        
+        # Add individual profiles to stacking info if computed
+        if return_individual_profiles:
+            stacking_info['individual_profiles'] = individual_profiles
         
         return stacked_patch, stacking_info, rejection_stats
     

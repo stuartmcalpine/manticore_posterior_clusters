@@ -64,59 +64,71 @@ class GenericMapLoader:
     def _apply_tanimura_filter(self, map_data: np.ndarray) -> np.ndarray:
         """
         Apply the Tanimura et al.-style ℓ-space high-pass filter:
-
+    
             - W_l = 0 for l < ell_filter_lmin
             - W_l = 1 for l > ell_filter_lmax
             - cosine ramp between ell_filter_lmin and ell_filter_lmax
-
+    
         The filter operates in harmonic space and preserves map units (e.g. µK).
         """
         # Ensure we know nside
         nside = self.config.nside or hp.get_nside(map_data)
         lmax = 3 * nside - 1
-
+    
         l1 = self.config.ell_filter_lmin
         l2 = self.config.ell_filter_lmax
         if not (0 <= l1 < l2 <= lmax):
             raise ValueError(
                 f"Invalid (ell_filter_lmin, ell_filter_lmax)=({l1},{l2}) for lmax={lmax}"
             )
-
+    
         ell = np.arange(lmax + 1, dtype=float)
-
+    
         # Build W_l
         W = np.ones_like(ell, dtype=float)
         W[ell < l1] = 0.0
-
+    
         mid = (ell >= l1) & (ell <= l2)
         ramp = (ell[mid] - l1) / (l2 - l1)          # 0 → 1
         W[mid] = 0.5 * (1.0 - np.cos(np.pi * ramp))  # smooth cosine 0→1
-
+    
         # Alm transforms expect RING ordering
         if self.config.nested:
             print("   Reordering map NESTED → RING for harmonic filtering")
             map_ring = hp.reorder(map_data, n2r=True)
         else:
             map_ring = map_data
-
+    
         # Forward transform
         alm = hp.map2alm(map_ring, lmax=lmax, iter=0)
         # Apply filter in-place
         hp.almxfl(alm, W, inplace=True)
         # Back to map
-        filtered_ring = hp.alm2map(alm, nside, verbose=False)
-
+        filtered_ring = hp.alm2map(alm, nside)
+    
         if self.config.nested:
             print("   Reordering filtered map RING → NESTED")
             filtered_map = hp.reorder(filtered_ring, r2n=True)
         else:
             filtered_map = filtered_ring
-
+    
         var_before = np.nanvar(map_data)
         var_after = np.nanvar(filtered_map)
+        
+        # Calculate expected RMS from filtered power spectrum
+        # Get Cl of filtered map
+        cl_filtered = hp.anafast(filtered_ring, lmax=min(lmax, 2500))
+        ell_arr = np.arange(len(cl_filtered))
+        variance_from_cl = np.sum((2*ell_arr + 1) * cl_filtered) / (4 * np.pi)
+        rms_from_cl = np.sqrt(variance_from_cl)
+        rms_from_map = np.sqrt(var_after)
+        
         print(f"   Tanimura filter variance: before={var_before:.3e}, "
               f"after={var_after:.3e} (ratio={var_after/var_before:.3f})")
-
+        print(f"   Filtered map RMS: {rms_from_map:.1f} μK (from map)")
+        print(f"   Filtered map RMS: {rms_from_cl:.1f} μK (from Cl)")
+        print(f"   Expected Tanimura RMS: ~40 μK")
+    
         return filtered_map
 
     def _apply_matched_filter(self, map_data: np.ndarray) -> np.ndarray:
@@ -160,7 +172,7 @@ class GenericMapLoader:
         # Transform map -> alm -> apply filter -> back to map
         alm = hp.map2alm(map_data, lmax=lmax)
         alm_filt = hp.almxfl(alm, f_l)
-        map_filt = hp.alm2map(alm_filt, nside=nside, verbose=False)
+        map_filt = hp.alm2map(alm_filt, nside=nside)
     
         return map_filt
 
@@ -208,7 +220,7 @@ class GenericMapLoader:
         # Map is assumed in RING ordering here
         alm = hp.map2alm(map_data, lmax=lmax)
         alm_f = hp.almxfl(alm, fl)
-        map_filtered = hp.alm2map(alm_f, nside=nside, verbose=False)
+        map_filtered = hp.alm2map(alm_f, nside=nside)
         
         return map_filtered
 
