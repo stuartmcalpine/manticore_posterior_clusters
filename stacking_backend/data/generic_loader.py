@@ -127,8 +127,7 @@ class GenericMapLoader:
               f"after={var_after:.3e} (ratio={var_after/var_before:.3f})")
         print(f"   Filtered map RMS: {rms_from_map:.1f} μK (from map)")
         print(f"   Filtered map RMS: {rms_from_cl:.1f} μK (from Cl)")
-        print(f"   Expected Tanimura RMS: ~40 μK")
-    
+   
         return filtered_map
 
     def _apply_matched_filter(self, map_data: np.ndarray) -> np.ndarray:

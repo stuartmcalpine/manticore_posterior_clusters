@@ -171,7 +171,7 @@ class MapConfig:
             coord_system="G",          # GALACTIC in the header
             calibration_factor=1e6,    # K → µK
             remove_monopole=False,
-            remove_dipole=False,       # you can set True if you want dipole removed
+            remove_dipole=True,
             ell_filter_type=ell_filter_type,
             ell_filter_lmin=ell_lmin,
             ell_filter_lmax=ell_lmax,
