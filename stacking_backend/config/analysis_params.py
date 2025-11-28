@@ -1,13 +1,13 @@
 # stacking_backend/config/analysis_params.py
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 @dataclass
 class AnalysisParameters:
     """Centralized configuration for cluster analysis"""
     
-    # Patch extraction parameters
-    patch_size_deg: float = 15.0
+    # Patch extraction parameters (in R500 units)
+    patch_size_r500: float = 10.0  # Patch spans ±patch_size_r500/2
     npix: int = 256
     
     # Aperture photometry parameters
@@ -17,12 +17,6 @@ class AnalysisParameters:
     
     # Stacking parameters
     max_patches: Optional[int] = None
-    scaling_mode: str = 'r500'  # 'r500' or 'angular'
-    
-    # Profile calculation parameters
-    n_radial_bins: int = 20
-    max_radius_deg: Optional[float] = None  # For angular mode
-    max_radius_r500: float = 5.0  # For r/r500 mode
     
     # Quality control parameters
     min_inner_pixels: int = 10
@@ -57,8 +51,8 @@ class AnalysisParameters:
         """Validate all parameters"""
         
         # Patch parameters
-        if self.patch_size_deg <= 0 or self.patch_size_deg > 90:
-            raise ValueError(f"patch_size_deg must be in (0, 90], got {self.patch_size_deg}")
+        if self.patch_size_r500 <= 0:
+            raise ValueError(f"patch_size_r500 must be positive, got {self.patch_size_r500}")
         
         if self.npix <= 0:
             raise ValueError(f"npix must be positive, got {self.npix}")
@@ -73,10 +67,6 @@ class AnalysisParameters:
         if not 0 < self.min_coverage <= 1:
             raise ValueError(f"min_coverage must be in (0, 1], got {self.min_coverage}")
         
-        # Scaling mode validation
-        if self.scaling_mode not in ['r500', 'angular']:
-            raise ValueError(f"scaling_mode must be 'r500' or 'angular', got {self.scaling_mode}")
-        
         # Analysis mode validation
         if self.analysis_mode not in ['tsz', 'ksz']:
             raise ValueError(f"analysis_mode must be 'tsz' or 'ksz', got {self.analysis_mode}")
@@ -90,30 +80,16 @@ class AnalysisParameters:
     
     @classmethod
     def get_default(cls):
-        """Get default analysis parameters (r/r500 mode, tSZ)"""
+        """Get default analysis parameters"""
         return cls()
-    
-    @classmethod
-    def for_angular_mode(cls):
-        """Get parameters for angular mode analysis"""
-        return cls(
-            scaling_mode='angular',
-            max_radius_deg=5.0,
-            patch_size_deg=15.0,
-            npix=256
-        )
     
     @classmethod
     def for_ksz_analysis(cls):
         """Get parameters optimized for kSZ analysis (profile-only, no bootstrap/null tests)"""
         return cls(
             analysis_mode='ksz',
-            scaling_mode='r500',
-            patch_size_deg=15.0,
+            patch_size_r500=10.0,
             npix=256,
-            n_radial_bins=20,
-            max_radius_r500=5.0,
-            # Bootstrap/null test parameters ignored in kSZ mode
             n_bootstrap=0,
             n_random_pointings=0
         )
@@ -123,16 +99,13 @@ class AnalysisParameters:
         """Get parameters optimized for mass scaling analysis"""
         return cls(
             analysis_mode='tsz',
-            patch_size_deg=20.0,
+            patch_size_r500=12.0,
             npix=256,
             inner_r500_factor=1.0,
             outer_r500_factor=3.0,
             min_coverage=0.8,
-            n_radial_bins=30,
             n_bootstrap=1000,
-            n_random_pointings=1000,
-            scaling_mode='r500',
-            max_radius_r500=5.0
+            n_random_pointings=1000
         )
     
     @classmethod
@@ -140,9 +113,8 @@ class AnalysisParameters:
         """Get parameters for quick testing"""
         return cls(
             analysis_mode='tsz',
-            patch_size_deg=10.0,
+            patch_size_r500=8.0,
             npix=128,
             n_bootstrap=100,
-            n_random_pointings=100,
-            scaling_mode='r500'
+            n_random_pointings=100
         )

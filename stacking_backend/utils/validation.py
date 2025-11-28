@@ -1,6 +1,6 @@
 # stacking_backend/utils/validation.py
 import numpy as np
-from typing import List, Tuple, Any
+from typing import List, Tuple
 
 class InputValidator:
     """Input validation for analysis parameters and data"""
@@ -8,7 +8,7 @@ class InputValidator:
     @staticmethod
     def validate_coord_list(coord_list: List[Tuple]) -> None:
         """Validate coordinate list format with detailed error messages"""
-        if coord_list.size == 0:
+        if len(coord_list) == 0:
             raise ValueError("Coordinate list is empty")
 
         if not isinstance(coord_list, (list, tuple, np.ndarray)):
@@ -44,17 +44,17 @@ class InputValidator:
                     print(f"Warning: Coordinate {i} has very high redshift: {coords[3]}")
     
     @staticmethod
-    def validate_analysis_params(patch_size_deg: float, npix: int, inner_r500_factor: float, 
+    def validate_analysis_params(patch_size_r500: float, npix: int, inner_r500_factor: float, 
                                outer_r500_factor: float, min_coverage: float) -> None:
         """Validate analysis parameters with detailed checks"""
         
-        # Patch size validation
-        if not isinstance(patch_size_deg, (int, float)):
-            raise TypeError(f"patch_size_deg must be numeric, got {type(patch_size_deg)}")
-        if patch_size_deg <= 0:
-            raise ValueError(f"patch_size_deg must be positive, got {patch_size_deg}")
-        if patch_size_deg > 90:
-            raise ValueError(f"patch_size_deg too large (>{90}°), got {patch_size_deg}")
+        # Patch size validation (in R500 units)
+        if not isinstance(patch_size_r500, (int, float)):
+            raise TypeError(f"patch_size_r500 must be numeric, got {type(patch_size_r500)}")
+        if patch_size_r500 <= 0:
+            raise ValueError(f"patch_size_r500 must be positive, got {patch_size_r500}")
+        if patch_size_r500 > 100:
+            raise ValueError(f"patch_size_r500 too large (>100), got {patch_size_r500}")
         
         # Pixel count validation
         if not isinstance(npix, int):

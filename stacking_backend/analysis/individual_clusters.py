@@ -8,7 +8,7 @@ class IndividualClusterAnalyzer:
         self.patch_extractor = patch_extractor
     
     def calculate_measurements(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
-                             patch_size_deg=15.0, npix=256, min_coverage=0.9,
+                             patch_size_r500=10.0, npix=256, min_coverage=0.9,
                              weights=None, profile_only_mode=False):
         """
         Calculate individual cluster measurements with error estimation.
@@ -19,8 +19,8 @@ class IndividualClusterAnalyzer:
             List of cluster coordinates (lon, lat, r500[, z, ...])
         inner_r500_factor, outer_r500_factor : float
             Aperture definition in units of R500
-        patch_size_deg : float
-            Patch size (degrees)
+        patch_size_r500 : float
+            Patch size in units of R500 (patch spans ±patch_size_r500/2)
         npix : int
             Patch resolution
         min_coverage : float
@@ -55,6 +55,9 @@ class IndividualClusterAnalyzer:
             try:
                 # Extract coordinates and R500
                 lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
+                
+                # Calculate patch size in degrees for this cluster
+                patch_size_deg = patch_size_r500 * r500_deg
                 
                 # Extract patch for this cluster using observed coordinates
                 patch_data, mask_patch = self.patch_extractor.extract_patch(

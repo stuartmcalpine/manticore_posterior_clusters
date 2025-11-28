@@ -5,13 +5,12 @@ from ..config.map_config import MapConfig
 from ..utils.validation import InputValidator
 from ..utils.statistics import StatisticsCalculator
 from .stacking import PatchStacker
-from .profiles import RadialProfileCalculator
 from .individual_clusters import IndividualClusterAnalyzer
 from .validation import NullTestValidator
 import threading
 
 class ClusterAnalysisPipeline:
-    """Main analysis pipeline with support for r/r500 and angular scaling modes"""
+    """Main analysis pipeline with r/r500 scaling"""
     
     def __init__(self, map_config=None):
         """
@@ -23,8 +22,6 @@ class ClusterAnalysisPipeline:
             Configuration for map loading. If None, will use default PR4 configuration
         """
         if map_config is None:
-            # Default to PR4 configuration for backward compatibility
-            # User should provide proper paths when creating MapConfig
             raise ValueError("MapConfig is required. Please provide a MapConfig object.")
         
         self.map_config = map_config
@@ -40,7 +37,7 @@ class ClusterAnalysisPipeline:
             
             # Initialize PatchExtractor with loaded data
             self.patch_extractor = PatchExtractor(
-                y_map=data["map"],  # or data["y_map"] for backward compatibility
+                y_map=data["map"],
                 combined_mask=data.get("combined_mask"),
                 nside=data["nside"],
                 nested=data.get("nested", False),
@@ -58,20 +55,36 @@ class ClusterAnalysisPipeline:
             raise RuntimeError(f"Failed to initialize analysis pipeline: {str(e)}") from e
     
     def run_individual_r500_analysis_with_validation(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
-                                               patch_size_deg=15.0, npix=256, max_patches=None,
-                                               min_coverage=0.9, n_radial_bins=20, run_null_tests=True,
-                                               n_bootstrap=500, n_random=500, weights=None, 
-                                               max_radius_r500=5, max_radius_deg=None,
+                                               patch_size_r500=10.0, npix=256, max_patches=None,
+                                               min_coverage=0.9, run_null_tests=True,
+                                               n_bootstrap=500, n_random=500, weights=None,
                                                subtract_background=True, bg_inner_radius_deg=5.0,
-                                               bg_outer_radius_deg=7.0, scaling_mode='r500',
-                                               return_individual_profiles=False, analysis_mode='tsz'):
+                                               bg_outer_radius_deg=7.0, analysis_mode='tsz'):
         """
-        Full analysis pipeline with support for r/r500 or angular scaling modes.
+        Full analysis pipeline with r/r500 scaling.
         
         Parameters
         ----------
         coord_list : list
             List of cluster coordinates (lon, lat, r500[, z, ...])
+        inner_r500_factor : float
+            Inner aperture radius in units of R500
+        outer_r500_factor : float
+            Outer aperture radius in units of R500
+        patch_size_r500 : float
+            Patch size in units of R500 (patch spans ±patch_size_r500/2)
+        npix : int
+            Number of pixels per side
+        max_patches : int or None
+            Maximum number of patches to stack
+        min_coverage : float
+            Minimum coverage fraction
+        run_null_tests : bool
+            Whether to run null tests
+        n_bootstrap : int
+            Number of bootstrap samples
+        n_random : int
+            Number of random pointings for null tests
         weights : array-like or None
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
         subtract_background : bool
@@ -80,23 +93,14 @@ class ClusterAnalysisPipeline:
             Inner radius for background annulus in degrees (default: 5.0)  
         bg_outer_radius_deg : float
             Outer radius for background annulus in degrees (default: 7.0)
-        scaling_mode : str
-            'r500': Rescale patches to r/r500 units before stacking (Tanimura method)
-            'angular': Stack in native angular (degree) coordinates
-        max_radius_r500 : float
-            Maximum radius for r/r500 mode (default: 5)
-        max_radius_deg : float, optional
-            Maximum radius for angular mode (default: patch_size_deg/2)
-        return_individual_profiles : bool
-            If True, compute and return radial profile for each individual cluster patch
         analysis_mode : str
             'tsz': Full tSZ analysis with aperture photometry, bootstrap, significance (default)
-            'ksz': Streamlined kSZ analysis - only radial profiles, skip aperture photometry
+            'ksz': Streamlined kSZ analysis - skip aperture photometry
         """
 
         # Input validation
         InputValidator.validate_coord_list(coord_list)
-        InputValidator.validate_analysis_params(patch_size_deg, npix, inner_r500_factor, outer_r500_factor, min_coverage)
+        InputValidator.validate_analysis_params(patch_size_r500, npix, inner_r500_factor, outer_r500_factor, min_coverage)
         
         if analysis_mode not in ['tsz', 'ksz']:
             raise ValueError(f"analysis_mode must be 'tsz' or 'ksz', got '{analysis_mode}'")
@@ -114,19 +118,18 @@ class ClusterAnalysisPipeline:
         print("🚀 CLUSTER ANALYSIS PIPELINE")
         print("="*70)
         print(f"⚙️  Analysis mode: {analysis_mode.upper()}")
-        print(f"⚙️  Scaling mode: {scaling_mode.upper()}")
-        if return_individual_profiles:
-            print(f"⚙️  Individual profiles: ENABLED")
+        print(f"⚙️  Scaling mode: R/R500")
+        print(f"⚙️  Patch size: ±{patch_size_r500/2:.1f} × R500")
         if profile_only_mode:
             print(f"⚙️  Profile-only mode: Skipping aperture photometry, bootstrap, and null tests")
         
-        # Step 1: Calculate individual cluster measurements (with or without aperture photometry)
+        # Step 1: Calculate individual cluster measurements
         print(f"\n🔍 Step 1: Individual cluster processing...")
         individual_results, rejection_stats, quality_stats = self.individual_analyzer.calculate_measurements(
             coord_list=coord_list,
             inner_r500_factor=inner_r500_factor,
             outer_r500_factor=outer_r500_factor,
-            patch_size_deg=patch_size_deg,
+            patch_size_r500=patch_size_r500,
             npix=npix,
             min_coverage=min_coverage,
             weights=weights,
@@ -146,7 +149,7 @@ class ClusterAnalysisPipeline:
         else:
             individual_weights = None
         
-        # For kSZ mode, skip steps 2-5 (bootstrap, null tests, significance)
+        # For kSZ mode, skip steps 2-4 (bootstrap, null tests, significance)
         bootstrap_results = None
         null_results = None
         significance_results = None
@@ -188,7 +191,7 @@ class ClusterAnalysisPipeline:
                     coord_list=valid_coords,
                     inner_r500_factor=inner_r500_factor,
                     outer_r500_factor=outer_r500_factor,
-                    patch_size_deg=patch_size_deg,
+                    patch_size_r500=patch_size_r500,
                     npix=npix,
                     min_coverage=min_coverage,
                     weights=individual_weights
@@ -204,60 +207,29 @@ class ClusterAnalysisPipeline:
             print(f"\n⏭️  Steps 2-4: Skipped (profile-only mode)")
         
         # Step N: Create stacked patch
-        step_num = 3 if profile_only_mode else 5
-        print(f"\n📚 Step {step_num}: Stacking patches in {scaling_mode.upper()} mode...")
+        step_num = 2 if profile_only_mode else 5
+        print(f"\n📚 Step {step_num}: Stacking patches in R/R500 mode...")
         stacked_patch, stacking_info, stack_rejection_stats = self.stacker.stack_patches(
             coord_list=valid_coords,
-            patch_size_deg=patch_size_deg,
+            patch_size_r500=patch_size_r500,
             npix=npix,
             min_coverage=min_coverage,
             max_patches=max_patches,
             weights=individual_weights,
             subtract_background=subtract_background,
             bg_inner_radius_deg=bg_inner_radius_deg,
-            bg_outer_radius_deg=bg_outer_radius_deg,
-            scaling_mode=scaling_mode,
-            max_radius_r500=max_radius_r500,
-            return_individual_profiles=return_individual_profiles,
-            n_radial_bins=n_radial_bins
+            bg_outer_radius_deg=bg_outer_radius_deg
         )
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')
         
-        # Step N+1: Calculate radial profile
-        step_num += 1
-        print(f"\n📊 Step {step_num}: Radial profile calculation...")
-        
-        if scaling_mode == 'r500':
-            # Patch is already in r/r500 units, compute profile directly
-            radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
-                stacked_patch=stacked_patch,
-                patch_size_deg=patch_size_deg,
-                n_radial_bins=n_radial_bins,
-                scaling_mode='r500',
-                max_radius_r500=stacking_info['max_radius_r500']
-            )
-            profile_units = 'r/r500'
-        else:
-            # Angular mode
-            max_rad_deg = max_radius_deg if max_radius_deg is not None else patch_size_deg/2
-            radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
-                stacked_patch=stacked_patch,
-                patch_size_deg=patch_size_deg,
-                n_radial_bins=n_radial_bins,
-                max_radius_deg=max_rad_deg,
-                scaling_mode='angular'
-            )
-            profile_units = 'degrees'
-        
-        # Step N+2: Compile results
+        # Compile results
         results = self._compile_results(
             individual_results, individual_delta_y, individual_errors,
             individual_weights, measurement_values, measurement_errors, measurement_label,
             bootstrap_results, significance_results, stacked_patch, stacking_info,
-            radii, profile, profile_errors, profile_counts,
-            rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-            inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units,
+            rejection_stats, quality_stats, coord_list, patch_size_r500, npix,
+            inner_r500_factor, outer_r500_factor, null_results,
             profile_only_mode
         )
         
@@ -374,11 +346,10 @@ class ClusterAnalysisPipeline:
     def _compile_results(self, individual_results, individual_delta_y, individual_errors,
                         individual_weights, measurement_values, measurement_errors, measurement_label,
                         bootstrap_results, significance_results, stacked_patch, stacking_info,
-                        radii, profile, profile_errors, profile_counts,
-                        rejection_stats, quality_stats, coord_list, patch_size_deg, npix,
-                        inner_r500_factor, outer_r500_factor, null_results, scaling_mode, profile_units,
+                        rejection_stats, quality_stats, coord_list, patch_size_r500, npix,
+                        inner_r500_factor, outer_r500_factor, null_results,
                         profile_only_mode):
-        """Compile results with scaling mode information"""
+        """Compile results"""
         
         # Calculate R500 statistics
         r500_values = [result['r500_deg'] for result in individual_results]
@@ -393,9 +364,6 @@ class ClusterAnalysisPipeline:
         
         weighted_mode = individual_weights is not None
         
-        # Extract individual profiles from stacking_info if available
-        individual_profiles = stacking_info.get('individual_profiles', None)
-        
         # Base results (always included)
         results = {
             'success': True,
@@ -404,16 +372,6 @@ class ClusterAnalysisPipeline:
             # Stacked patch data
             'stacked_patch': stacked_patch,
             'stacking_info': stacking_info,
-            
-            # Radial profile
-            'profile_radii': radii,
-            'profile_mean': profile,
-            'profile_errors': profile_errors,
-            'profile_counts': profile_counts,
-            'profile_units': profile_units,
-            
-            # Individual profiles (if computed)
-            'individual_profiles': individual_profiles,
             
             # R500 statistics
             'r500_values': r500_values,
@@ -427,11 +385,10 @@ class ClusterAnalysisPipeline:
             'rejection_stats': rejection_stats,
             
             # Analysis parameters
-            'patch_size_deg': patch_size_deg,
+            'patch_size_r500': patch_size_r500,
             'npix': npix,
             'inner_r500_factor': inner_r500_factor,
             'outer_r500_factor': outer_r500_factor,
-            'scaling_mode': scaling_mode,
             
             'weighted_mode': weighted_mode,
         }
@@ -495,7 +452,7 @@ class ClusterAnalysisPipeline:
         return results
     
     def _print_summary(self, results, profile_only_mode):
-        """Print analysis summary with scaling mode information"""
+        """Print analysis summary"""
         print(f"\n🎯 ANALYSIS RESULTS:")
         print("="*50)
         
@@ -537,7 +494,7 @@ class ClusterAnalysisPipeline:
         else:
             # kSZ mode: minimal summary
             print(f"📊 Profile-Only Mode (kSZ):")
-            print(f"   Radial profile computed successfully")
+            print(f"   Stacked patch computed successfully")
         
         print(f"\n📏 Sample Statistics:")
         print(f"   Valid clusters: {results['n_measurements']}/{results['n_input_coords']}")
@@ -545,15 +502,12 @@ class ClusterAnalysisPipeline:
         
         print(f"\n⚙️  Analysis Configuration:")
         print(f"   Analysis mode: {results['analysis_mode'].upper()}")
-        print(f"   Scaling mode: {results['scaling_mode'].upper()}")
-        print(f"   Profile units: {results['profile_units']}")
+        print(f"   Scaling mode: R/R500")
+        print(f"   Patch size: ±{results['patch_size_r500']/2:.1f} × R500")
         print(f"   Stacking coordinate system: {results['stacking_info']['coord_system']}")
         if results['weighted_mode']:
             print(f"   Weighted mode: True (using weights in stacking)")
         else:
             print(f"   Weighted mode: False (unweighted analysis)")
-        
-        if results.get('individual_profiles') is not None:
-            print(f"   Individual profiles: {len(results['individual_profiles'])} computed")
         
         print(f"\n🎉 Analysis complete!")

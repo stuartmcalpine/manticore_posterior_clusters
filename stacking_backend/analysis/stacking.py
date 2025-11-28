@@ -1,29 +1,26 @@
 import numpy as np
 import warnings
 from scipy.interpolate import RectBivariateSpline
-from .profiles import RadialProfileCalculator
 
 class PatchStacker:
-    """Stack multiple patches for improved signal-to-noise with r/r500 or angular scaling"""
+    """Stack multiple patches in r/r500 units with rescaling"""
     
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
     
-    def stack_patches(self, coord_list, patch_size_deg=15.0, npix=256,
+    def stack_patches(self, coord_list, patch_size_r500=10.0, npix=256,
                  min_coverage=0.9, max_patches=None, weights=None,
                  subtract_background=True, bg_inner_radius_deg=5.0, 
-                 bg_outer_radius_deg=7.0, scaling_mode='r500', 
-                 max_radius_r500=10.0, return_individual_profiles=False,
-                 n_radial_bins=20):
+                 bg_outer_radius_deg=7.0):
         """
-        Stack multiple patches with optional r/r500 rescaling
+        Stack multiple patches with r/r500 rescaling
         
         Parameters
         ----------
         coord_list : list
             List of coordinates (lon, lat, r500[, z, ...])
-        patch_size_deg : float
-            Size of square patch in degrees for extraction
+        patch_size_r500 : float
+            Size of patch in units of R500 (patch spans ±patch_size_r500/2)
         npix : int
             Number of pixels per side of patch
         min_coverage : float
@@ -38,20 +35,10 @@ class PatchStacker:
             Inner radius for background annulus in degrees
         bg_outer_radius_deg : float
             Outer radius for background annulus in degrees
-        scaling_mode : str
-            'r500': Rescale each patch to r/r500 units before stacking (Tanimura method)
-            'angular': Stack in native angular (degree) coordinates
-        max_radius_r500 : float
-            Maximum radius in r/r500 units for rescaled stacking (only used if scaling_mode='r500')
-        return_individual_profiles : bool
-            If True, calculate and return radial profile for each individual patch
-        n_radial_bins : int
-            Number of radial bins for individual profiles (only used if return_individual_profiles=True)
         """
 
-        print(f"🔄 Stacking {len(coord_list)} patches in {scaling_mode.upper()} mode...")
-        if return_individual_profiles:
-            print(f"   📊 Will compute individual radial profiles ({n_radial_bins} bins)")
+        print(f"🔄 Stacking {len(coord_list)} patches in R/R500 mode...")
+        print(f"   Patch size: ±{patch_size_r500/2:.1f} × R500")
         
         if weights is not None:
             weights = np.asarray(weights)
@@ -64,8 +51,7 @@ class PatchStacker:
         valid_patches = []
         valid_coords = []
         valid_weights = [] if weights is not None else None
-        valid_r500s = []  # Track R500 values for rescaling
-        individual_profiles = [] if return_individual_profiles else None
+        valid_r500s = []
         rejection_stats = {'insufficient_coverage': 0, 'extraction_error': 0, 
                           'rescaling_failed': 0}
         
@@ -83,6 +69,12 @@ class PatchStacker:
                     print(f"   Warning: Coordinate {i} missing R500, skipping")
                     continue
                 
+                # Calculate patch size in degrees for this cluster
+                patch_size_deg = patch_size_r500 * r500_deg
+               
+                if subtract_background:
+                    patch_size_deg = max(patch_size_deg, 2*bg_outer_radius_deg)
+
                 # Extract patch in native angular coordinates
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
                     center_coords=(lon_gal, lat_gal),
@@ -114,54 +106,16 @@ class PatchStacker:
                         bg_inner_radius_deg, bg_outer_radius_deg
                     )
                 
-                # For r/r500 mode, rescale patch to r/r500 units
-                if scaling_mode == 'r500':
-                    try:
-                        patch_data = self._rescale_to_r500(
-                            patch_data, patch_size_deg, r500_deg, 
-                            npix, max_radius_r500
-                        )
-                    except Exception as e:
-                        print(f"   Warning: Failed to rescale patch {i}: {e}")
-                        rejection_stats['rescaling_failed'] += 1
-                        continue
-                
-                # Calculate individual radial profile if requested
-                if return_individual_profiles:
-                    if scaling_mode == 'r500':
-                        radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
-                            stacked_patch=patch_data,
-                            patch_size_deg=patch_size_deg,
-                            n_radial_bins=n_radial_bins,
-                            scaling_mode='r500',
-                            max_radius_r500=max_radius_r500
-                        )
-                        profile_units = 'r/r500'
-                    else:
-                        radii, profile, profile_errors, profile_counts = RadialProfileCalculator.calculate_profile(
-                            stacked_patch=patch_data,
-                            patch_size_deg=patch_size_deg,
-                            n_radial_bins=n_radial_bins,
-                            scaling_mode='angular'
-                        )
-                        profile_units = 'degrees'
-                    
-                    # Store individual profile
-                    profile_dict = {
-                        'radii': radii,
-                        'profile': profile,
-                        'profile_errors': profile_errors,
-                        'profile_counts': profile_counts,
-                        'profile_units': profile_units,
-                        'cluster_index': i,
-                        'coords': coords,
-                        'r500_deg': r500_deg
-                    }
-                    
-                    if weights is not None:
-                        profile_dict['weight'] = weights[i]
-                    
-                    individual_profiles.append(profile_dict)
+                # Rescale patch to r/r500 units
+                try:
+                    patch_data = self._rescale_to_r500(
+                        patch_data, patch_size_deg, r500_deg, 
+                        npix, patch_size_r500
+                    )
+                except Exception as e:
+                    print(f"   Warning: Failed to rescale patch {i}: {e}")
+                    rejection_stats['rescaling_failed'] += 1
+                    continue
                 
                 valid_patches.append(patch_data)
                 valid_coords.append(coords)
@@ -180,34 +134,25 @@ class PatchStacker:
         
         print(f"✅ Using {len(valid_patches)} valid patches")
         print(f"   Rejected: {rejection_stats['insufficient_coverage']} (coverage), "
-              f"{rejection_stats['extraction_error']} (errors)")
-        if scaling_mode == 'r500':
-            print(f"   Rejected: {rejection_stats['rescaling_failed']} (rescaling failed)")
-        
-        if return_individual_profiles:
-            print(f"   📊 Computed {len(individual_profiles)} individual radial profiles")
+              f"{rejection_stats['extraction_error']} (errors), "
+              f"{rejection_stats['rescaling_failed']} (rescaling failed)")
         
         # Stack patches
         stacked_patch, stacking_info = self._compute_stack(
-            valid_patches, valid_coords, patch_size_deg, npix,
+            valid_patches, valid_coords, patch_size_r500, npix,
             rejection_stats, valid_weights=valid_weights,
-            scaling_mode=scaling_mode, valid_r500s=valid_r500s,
-            max_radius_r500=max_radius_r500
+            valid_r500s=valid_r500s
         )
-        
-        # Add individual profiles to stacking info if computed
-        if return_individual_profiles:
-            stacking_info['individual_profiles'] = individual_profiles
         
         return stacked_patch, stacking_info, rejection_stats
     
-    def _rescale_to_r500(self, patch_data, patch_size_deg, r500_deg, npix, max_radius_r500):
+    def _rescale_to_r500(self, patch_data, patch_size_deg, r500_deg, npix, patch_size_r500):
         """
         Rescale a patch from angular (degree) coordinates to r/r500 coordinates.
-        
+    
         This implements the Tanimura et al. method: place each cluster on a grid
         in scaled angular distance θ/θ500.
-        
+    
         Parameters
         ----------
         patch_data : np.ndarray
@@ -218,49 +163,83 @@ class PatchStacker:
             R500 for this cluster in degrees
         npix : int
             Number of pixels in output scaled patch
-        max_radius_r500 : float
-            Maximum radius in r/r500 units for output patch
-        
+        patch_size_r500 : float
+            Output patch size in r/r500 units (spans ±patch_size_r500/2)
+    
         Returns
         -------
         rescaled_patch : np.ndarray
-            Patch rescaled to r/r500 coordinates, spanning ±max_radius_r500
+            Patch rescaled to r/r500 coordinates, spanning ±patch_size_r500/2
         """
-        # Input patch coordinates in degrees
-        input_coords_deg = np.linspace(-patch_size_deg/2, patch_size_deg/2, 
-                                       patch_data.shape[0])
-        
+        # Input patch
+        ny, nx = patch_data.shape
+        if ny != nx:
+            raise ValueError(f"Input patch must be square, got shape {patch_data.shape}")
+        n_in = ny
+    
+        # 1D input coordinates in degrees (native patch grid)
+        input_coords_deg = np.linspace(-patch_size_deg / 2.0, patch_size_deg / 2.0, n_in)
+    
         # Output patch coordinates in r/r500 units
-        output_coords_r500 = np.linspace(-max_radius_r500, max_radius_r500, npix)
-        
+        output_coords_r500 = np.linspace(-patch_size_r500 / 2.0, patch_size_r500 / 2.0, npix)
         # Convert output coordinates from r/r500 to degrees for this cluster
         output_coords_deg = output_coords_r500 * r500_deg
-        
-        # Create interpolator for the input patch
-        # Handle NaNs by masking them during interpolation
-        valid_mask = np.isfinite(patch_data)
-        
-        # Replace NaNs with 0 for interpolation, we'll mask them back later
+    
+        # ---- Data interpolation ----
+    
+        # Valid mask in the input patch
+        valid_mask_in = np.isfinite(patch_data)
+    
+        # Replace NaNs with 0 for interpolation; we'll reapply mask after
         patch_for_interp = patch_data.copy()
-        patch_for_interp[~valid_mask] = 0
-        
-        # Use RectBivariateSpline for smooth interpolation
-        interp = RectBivariateSpline(input_coords_deg, input_coords_deg, 
-                                     patch_for_interp, kx=1, ky=1)
-        
-        # Interpolate onto the r/r500 grid
+        patch_for_interp[~valid_mask_in] = 0.0
+    
+        # Interpolator on the native angular grid
+        interp = RectBivariateSpline(
+            input_coords_deg, input_coords_deg,
+            patch_for_interp,
+            kx=1, ky=1
+        )
+    
+        # Interpolate data onto the r/r500 grid
         rescaled_patch = interp(output_coords_deg, output_coords_deg)
-        
-        # Interpolate the mask as well to know which pixels are valid
-        mask_for_interp = valid_mask.astype(float)
-        mask_interp = RectBivariateSpline(input_coords_deg, input_coords_deg,
-                                          mask_for_interp, kx=1, ky=1)
-        rescaled_mask = mask_interp(output_coords_deg, output_coords_deg)
-        
-        # Set pixels with low mask values to NaN (threshold at 0.5)
-        rescaled_patch[rescaled_mask < 0.5] = np.nan
-        
+    
+        # ---- Proper mask propagation: simple nearest neighbour ----
+    
+        # Pixel scale in degrees in the input patch
+        pixel_scale_deg = patch_size_deg / (n_in - 1)
+    
+        # Precompute mapping from output coords (deg) -> input pixel indices (float)
+        # index = (theta_deg - theta_min) / pixel_scale, where theta_min = -patch_size_deg/2
+        xi_float = (output_coords_deg + patch_size_deg / 2.0) / pixel_scale_deg  # length npix
+        yi_float = (output_coords_deg + patch_size_deg / 2.0) / pixel_scale_deg  # length npix
+    
+        # Nearest-neighbour integer indices
+        xi_nn = np.rint(xi_float).astype(int)  # length npix
+        yi_nn = np.rint(yi_float).astype(int)  # length npix
+    
+        # Build rescaled validity mask
+        valid_rescaled = np.zeros((npix, npix), dtype=bool)
+    
+        for iy in range(npix):
+            j = yi_nn[iy]
+            if j < 0 or j >= n_in:
+                # Entire row is out of bounds in y
+                continue
+            for ix in range(npix):
+                i = xi_nn[ix]
+                if i < 0 or i >= n_in:
+                    # Out of bounds in x
+                    continue
+                # Valid if the nearest neighbour input pixel was valid
+                if valid_mask_in[j, i]:
+                    valid_rescaled[iy, ix] = True
+    
+        # Apply mask: anything whose NN parent was invalid or out-of-bounds becomes NaN
+        rescaled_patch[~valid_rescaled] = np.nan
+    
         return rescaled_patch
+    
     
     def _subtract_background(self, patch_data, patch_size_deg, npix, patch_index,
                             bg_inner_radius_deg=5.0, bg_outer_radius_deg=7.0):
@@ -295,9 +274,8 @@ class PatchStacker:
         
         return patch_data
 
-    def _compute_stack(self, valid_patches, valid_coords, patch_size_deg, npix,
-                       rejection_stats, valid_weights=None, scaling_mode='r500',
-                       valid_r500s=None, max_radius_r500=10.0):
+    def _compute_stack(self, valid_patches, valid_coords, patch_size_r500, npix,
+                       rejection_stats, valid_weights=None, valid_r500s=None):
         """
         Compute the final stacked patch.
 
@@ -356,21 +334,13 @@ class PatchStacker:
         # Calculate standard error
         stacked_error = stacked_std / np.sqrt(np.maximum(n_contributing, 1))
 
-        # Determine the effective coordinate system of the stacked patch
-        if scaling_mode == 'r500':
-            coord_system = 'r500_units'
-            extent_description = f"±{max_radius_r500:.1f} × R500"
-            median_r500 = np.median(valid_r500s) if valid_r500s else None
-        else:
-            coord_system = 'angular_degrees'
-            extent_description = f"±{patch_size_deg/2:.1f}°"
-            median_r500 = None
+        median_r500 = np.median(valid_r500s) if valid_r500s else None
 
         stacking_info = {
             'n_patches': len(valid_patches),
             'n_rejected': len(valid_coords) + sum(rejection_stats.values()) - len(valid_patches),
             'rejection_stats': rejection_stats,
-            'patch_size_deg': patch_size_deg,
+            'patch_size_r500': patch_size_r500,
             'npix': npix,
             'valid_coords': valid_coords,
             'stacked_std': stacked_std,
@@ -378,15 +348,13 @@ class PatchStacker:
             'n_contributing': n_contributing,
             'weights_used': valid_weights is not None,
             'variance_weighted': valid_weights is not None,
-            'scaling_mode': scaling_mode,
-            'coord_system': coord_system,
-            'extent_description': extent_description,
+            'coord_system': 'r500_units',
+            'extent_description': f"±{patch_size_r500/2:.1f} × R500",
             'median_r500_deg': median_r500,
-            'max_radius_r500': max_radius_r500 if scaling_mode == 'r500' else None
         }
 
         print(f"   Stack dimensions: {stacked_patch.shape}")
-        print(f"   Coordinate system: {coord_system} ({extent_description})")
+        print(f"   Coordinate system: r500_units (±{patch_size_r500/2:.1f} × R500)")
         print(f"   Valid pixel range: {np.nanmin(n_contributing)}-{np.nanmax(n_contributing)} patches")
         if valid_weights is not None:
             print(f"   Weighted stack: using {len(valid_patches)} weights with variance normalization")

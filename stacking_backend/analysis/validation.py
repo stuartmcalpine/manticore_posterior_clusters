@@ -8,7 +8,7 @@ class NullTestValidator:
         self.patch_extractor = patch_extractor
     
     def run_null_tests(self, n_random_pointings, coord_list, inner_r500_factor, outer_r500_factor,
-                      patch_size_deg, npix, min_coverage, weights=None):
+                      patch_size_r500, npix, min_coverage, weights=None):
         """
         Run null tests with mask-bias correction.
         
@@ -20,8 +20,8 @@ class NullTestValidator:
             Cluster coordinate list (used for mask statistics)
         inner_r500_factor, outer_r500_factor : float
             Aperture definition in R500 units
-        patch_size_deg : float
-            Patch size
+        patch_size_r500 : float
+            Patch size in units of R500
         npix : int
             Patch resolution
         min_coverage : float
@@ -40,12 +40,12 @@ class NullTestValidator:
         
         # First, analyze mask coverage distribution of actual cluster sample
         cluster_coverage_stats = self._analyze_cluster_mask_coverage(
-            coord_list, patch_size_deg, npix, inner_r500_factor, outer_r500_factor
+            coord_list, patch_size_r500, npix, inner_r500_factor, outer_r500_factor
         )
         
         # Generate random pointings with mask-bias correction
         random_coords = self._generate_mask_matched_random_pointings(
-            n_random_pointings, coord_list, patch_size_deg, cluster_coverage_stats
+            n_random_pointings, coord_list, patch_size_r500, cluster_coverage_stats
         )
         
         # Prepare weight pool for random pointings if we are doing weighted nulls
@@ -53,7 +53,7 @@ class NullTestValidator:
         
         # Calculate measurements for random pointings
         random_measurements = []
-        random_errors = []  # Track errors for random measurements too
+        random_errors = []
         rejection_count = 0
         rejection_reasons = {'insufficient_mask_coverage': 0, 'extraction_error': 0, 
                            'insufficient_pixels': 0, 'mask_mismatch': 0}
@@ -61,6 +61,9 @@ class NullTestValidator:
         for i, coords in enumerate(random_coords):
             try:
                 lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
+                
+                # Calculate patch size in degrees for this cluster
+                patch_size_deg = patch_size_r500 * r500_deg
                 
                 # Extract patch
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -158,7 +161,7 @@ class NullTestValidator:
             'has_individual_errors': len(random_errors) > 0
         }
     
-    def _analyze_cluster_mask_coverage(self, coord_list, patch_size_deg, npix, 
+    def _analyze_cluster_mask_coverage(self, coord_list, patch_size_r500, npix, 
                                      inner_r500_factor, outer_r500_factor):
         """Analyze mask coverage statistics of actual cluster sample"""
         
@@ -174,6 +177,9 @@ class NullTestValidator:
         for coords in coord_list:
             try:
                 lon_gal, lat_gal, r500_deg = coords[0], coords[1], coords[2]
+                
+                # Calculate patch size in degrees for this cluster
+                patch_size_deg = patch_size_r500 * r500_deg
                 
                 # Extract patch
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -217,12 +223,12 @@ class NullTestValidator:
         
         return coverage_stats
     
-    def _generate_mask_matched_random_pointings(self, n_random, cluster_coords, patch_size_deg, 
+    def _generate_mask_matched_random_pointings(self, n_random, cluster_coords, patch_size_r500, 
                                               cluster_coverage_stats):
         """Generate random pointings with mask statistics matching cluster sample"""
         
         random_coords = []
-        exclusion_radius = max(patch_size_deg * 2.0, 5.0)  # Reduced from 3x
+        exclusion_radius = max(patch_size_r500 * cluster_coverage_stats['median_r500'] * 2.0, 5.0)
         
         # Extract cluster positions for exclusion
         cluster_positions = []
@@ -235,7 +241,7 @@ class NullTestValidator:
         lat_ranges = [(-80, -20), (20, 80)]
         
         attempts = 0
-        max_attempts = n_random * 100  # Increased attempts for mask matching
+        max_attempts = n_random * 100
         
         while len(random_coords) < n_random and attempts < max_attempts:
             # Choose random latitude range
@@ -259,10 +265,11 @@ class NullTestValidator:
             
             # Check if this position has similar mask coverage to cluster sample
             try:
+                patch_size_deg = patch_size_r500 * median_r500
                 test_patch, test_mask = self.patch_extractor.extract_patch(
                     center_coords=(lon_gal, lat_gal),
                     patch_size_deg=patch_size_deg,
-                    npix=256  # Use smaller npix for speed in test
+                    npix=256
                 )
                 
                 if test_mask is not None:
@@ -332,4 +339,3 @@ class NullTestValidator:
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
         
         return np.degrees(c)
-
