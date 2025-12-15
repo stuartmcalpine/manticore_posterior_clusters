@@ -6,7 +6,7 @@ class RadialProfileCalculator:
     
     @staticmethod
     def calculate_profile(stacked_patch, patch_size_r500, n_radial_bins=20, 
-                         max_radius_r500=None):
+                         max_radius_r500=None, verbose=False):
         """
         Calculate radial profile from stacked patch in r/r500 units.
         
@@ -42,8 +42,9 @@ class RadialProfileCalculator:
         if max_radius_r500 is None:
             max_radius_r500 = patch_size_r500 / 2.0
         
-        print(f"📊 Calculating radial profile in R/R500 coordinates...")
-        print(f"   Radial bins: {n_radial_bins}, Max radius: {max_radius_r500:.1f} × R500")
+        if verbose:
+            print(f"📊 Calculating radial profile in R/R500 coordinates...")
+            print(f"   Radial bins: {n_radial_bins}, Max radius: {max_radius_r500:.1f} × R500")
         
         # Create coordinate grids in r/r500 units
         center = npix // 2
@@ -88,8 +89,9 @@ class RadialProfileCalculator:
         profile_mean[invalid_bins] = np.nan
         profile_error[invalid_bins] = np.nan
         
-        print(f"   Profile calculated: {np.sum(~np.isnan(profile_mean))}/{n_radial_bins} valid bins")
-        print(f"   Radial range: 0 to {max_radius_r500:.1f} × R500")
+        if verbose:
+            print(f"   Profile calculated: {np.sum(~np.isnan(profile_mean))}/{n_radial_bins} valid bins")
+            print(f"   Radial range: 0 to {max_radius_r500:.1f} × R500")
         
         return radius_centers, profile_mean, profile_error, profile_count
     

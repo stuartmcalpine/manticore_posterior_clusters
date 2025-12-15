@@ -39,11 +39,6 @@ class MapConfig:
     remove_dipole: bool = False
     calibration_factor: float = 1.0
 
-    # ℓ-space Tanimura-style high-pass filter
-    ell_filter_type: Optional[str] = None  # None or "tanimura"
-    ell_filter_lmin: int = 360             # start of ramp (ℓ₁)
-    ell_filter_lmax: int = 720             # end of ramp (ℓ₂)
-
     def __post_init__(self):
         """Validate configuration after initialization"""
         if self.map_format not in MapFormat:
@@ -57,7 +52,6 @@ class MapConfig:
         
         if self.coord_system not in ["G", "C"]:
             raise ValueError(f"coord_system must be 'G' (Galactic) or 'C' (Celestial), got {self.coord_system}")
-
 
     @classmethod
     def for_planck_pr4(cls, y_map_path: str, masks_path: str):
@@ -79,12 +73,12 @@ class MapConfig:
         return cls(
             map_path=y_map_path,
             mask_path=mask_path,
-            map_format=MapFormat.HEALPIX,   # Same as PR4 – HEALPix all-sky map
-            map_column=None,                # IMPORTANT: Compton-y maps do NOT have columns
-            mask_columns=None,              # Mask typically single-map; no columns
-            mask_combine_method="AND",      # If you choose to combine multiple masks later
-            nside=2048,                     # All official y-maps are NSIDE=2048
-            coord_system="G"                # MILCA/NILC maps are in Galactic coordinates
+            map_format=MapFormat.HEALPIX,
+            map_column=None,
+            mask_columns=None,
+            mask_combine_method="AND",
+            nside=2048,
+            coord_system="G"
         )
 
     @classmethod
@@ -94,8 +88,8 @@ class MapConfig:
             map_path=map_path,
             mask_path=mask_path,
             map_format=MapFormat.HEALPIX,
-            map_column=None,  # Use primary data array
-            mask_columns=None,  # Use primary mask array
+            map_column=None,
+            mask_columns=None,
             coord_system="G"
         )
     
@@ -119,61 +113,48 @@ class MapConfig:
         """Preset for Planck CMB temperature maps (SMICA/NILC) for kSZ analysis"""
         return cls(
             map_path=cmb_map_path,
-            mask_path=cmb_map_path,          # same file for map + TMASK
+            mask_path=cmb_map_path,
             map_format=MapFormat.HEALPIX,
-            map_column="I_STOKES",           # temperature column
-            mask_columns=["TMASK"],          # use TMASK from same table
-            mask_combine_method="SINGLE",
-            nside=2048,
-            coord_system="G",
-            calibration_factor=1e6,          # K -> µK
-            remove_monopole=False,
-            remove_dipole=False,
-            nested=True,
-            apply_ell_filter=False,
-            ell_filter_lmin=360,        # ≈ 30 arcmin
-            ell_filter_lmax=720,        # ≈ 15 arcmin
-            lmax=None,                   # default to 3*nside-1
-        )
-
-    @classmethod
-    def for_planck_217_tanimura(
-        cls,
-        map_path: str,
-        mask_path: Optional[str] = None,
-        ell_lmin: int = 360,
-        ell_lmax: int = 720,
-        nested: bool = True,
-        ell_filter_type = "tanimura"
-    ):
-        """
-        Preset for Planck 217 GHz map processed with a Tanimura-style
-        ℓ-space high-pass filter for kSZ analysis.
-    
-        - Uses I_STOKES as the temperature map.
-        - Assumes NSIDE=2048, Galactic coordinates.
-        - Converts K_CMB → µK_CMB via calibration_factor.
-        - Applies a cosine high-pass window W_ell:
-            W_ell = 0 for ell < ell_lmin
-            W_ell = 1 for ell > ell_lmax
-            smooth ramp between ell_lmin and ell_lmax.
-        """
-        return cls(
-            map_path=map_path,
-            mask_path=mask_path,
-            map_format=MapFormat.HEALPIX,
-            map_hdu=1,                 # FREQ-MAP HDU
-            map_column="I_STOKES",     # main temperature map
+            map_column="I_STOKES",
             mask_columns=["TMASK"],
             mask_combine_method="SINGLE",
             nside=2048,
-            nested=nested,             # True for HFI_SkyMap_217_2048_R3.01_full.fits
-            coord_system="G",          # GALACTIC in the header
-            calibration_factor=1e6,    # K → µK
+            coord_system="G",
+            calibration_factor=1e6,
             remove_monopole=False,
-            remove_dipole=True,
-            ell_filter_type=ell_filter_type,
-            ell_filter_lmin=ell_lmin,
-            ell_filter_lmax=ell_lmax,
+            remove_dipole=False,
+            nested=True
         )
 
+    @classmethod
+    def for_prefiltered_planck(cls, filtered_map_path: str, mask_path: Optional[str] = None,
+                              nested: bool = True):
+        """
+        Preset for pre-filtered Planck maps (e.g., output from preprocess_planck_map.py).
+        
+        Use this when you've already applied Tanimura filtering, dipole removal, and
+        calibration using the standalone preprocessing script.
+        
+        Parameters
+        ----------
+        filtered_map_path : str
+            Path to pre-filtered HEALPix map
+        mask_path : str, optional
+            Path to mask file
+        nested : bool
+            Whether map is in NESTED ordering (default: True)
+        """
+        return cls(
+            map_path=filtered_map_path,
+            mask_path=mask_path,
+            map_format=MapFormat.HEALPIX,
+            map_column=None,  # Pre-filtered maps are simple arrays
+            mask_columns=["TMASK"] if mask_path else None,
+            mask_combine_method="SINGLE",
+            nside=2048,
+            coord_system="G",
+            calibration_factor=1e6,
+            remove_monopole=False, 
+            remove_dipole=False,  # Already removed 
+            nested=nested
+        )

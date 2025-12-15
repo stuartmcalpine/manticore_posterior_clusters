@@ -68,9 +68,7 @@ class PatchExtractor:
 
     def extract_patch(self, center_coords, patch_size_deg, npix, coord_system=None):
         """
-        Extract patch from map using healpy's gnomonic projection, assuming
-        center_coords are in the same coordinate system as the map.
-        This is a minimal version for debugging: no extra conversions.
+        Extract patch using direct HEALPix queries (much faster than gnomview).
         """
         lon_c, lat_c = center_coords[:2]
     
@@ -82,37 +80,46 @@ class PatchExtractor:
         if patch_size_deg <= 0 or npix <= 0:
             raise ValueError("patch_size_deg and npix must be positive")
     
-        reso_arcmin = (patch_size_deg / npix) * 60.0  # arcmin per pixel
-    
+        # Create pixel grid in tangent plane
+        pixel_size = patch_size_deg / npix
+        x = np.linspace(-patch_size_deg/2, patch_size_deg/2, npix)
+        y = np.linspace(-patch_size_deg/2, patch_size_deg/2, npix)
+        xx, yy = np.meshgrid(x, y)
+        
+        # Convert offsets to sky coordinates using gnomonic projection
+        # For small angles: ξ ≈ (lon - lon_c) * cos(lat_c), η ≈ (lat - lat_c)
+        cos_lat_c = np.cos(np.radians(lat_c))
+        
+        # Avoid poles
+        if abs(cos_lat_c) < 1e-6:
+            cos_lat_c = np.sign(cos_lat_c) * 1e-6 if cos_lat_c != 0 else 1e-6
+        
+        lon_grid = lon_c + xx / cos_lat_c
+        lat_grid = lat_c + yy
+        
+        # Clip to valid ranges
+        lon_grid = np.clip(lon_grid, 0, 360)
+        lat_grid = np.clip(lat_grid, -90, 90)
+        
+        # Convert to HEALPix theta, phi
+        theta_grid = np.radians(90.0 - lat_grid)
+        phi_grid = np.radians(lon_grid)
+        
+        # Query HEALPix map at these positions
         with self._lock:
-            # Map patch
-            y_patch = hp.gnomview(
-                self.y_map,
-                rot=(lon_c, lat_c, 0.0),
-                xsize=npix,
-                reso=reso_arcmin,
-                no_plot=True,
-                return_projected_map=True,
-                nest=self.nested,
-            )
-    
-            # Mask patch (if any)
+            # Get pixel indices
+            pix_indices = hp.ang2pix(self.nside, theta_grid, phi_grid, nest=self.nested)
+            
+            # Extract values
+            y_patch = self.y_map[pix_indices]
+            
+            # Extract mask if available
             if self.combined_mask is not None:
-                mask_proj = hp.gnomview(
-                    self.combined_mask.astype(float),
-                    rot=(lon_c, lat_c, 0.0),
-                    xsize=npix,
-                    reso=reso_arcmin,
-                    no_plot=True,
-                    return_projected_map=True,
-                    nest=self.nested,
-                )
-                mask_patch = mask_proj > 0.5
+                mask_patch = self.combined_mask[pix_indices]
             else:
                 mask_patch = None
-    
+        
         return y_patch, mask_patch
-
 
     def _convert_coordinates(self, lon, lat, from_system, to_system):
         """
