@@ -10,7 +10,9 @@ def main():
     parser.add_argument('--config', default='config.toml', help='Path to config file (default: config.toml)')
     parser.add_argument('--output', default='output', help='Output directory (default: output)')
     parser.add_argument('--mpi-np', type=int, default=1, help='Number of MPI processes for mode 2 and 4 (default: 1)')
-    
+    parser.add_argument('--eps', type=float, default=None, help='DBSCAN eps parameter (overrides config file, used in modes 1 and 3)')
+    parser.add_argument('--min-samples', type=int, default=None, help='DBSCAN min_samples parameter (overrides config file, used in modes 1 and 3)')
+
     args = parser.parse_args()
     
     # Add backend to Python path
@@ -18,8 +20,12 @@ def main():
     
     if args.mode == '1':
         print(f"Running Mode 1 with config={args.config}, output={args.output}")
+        if args.eps is not None:
+            print(f"  Overriding eps={args.eps}")
+        if args.min_samples is not None:
+            print(f"  Overriding min_samples={args.min_samples}")
         from backend.mode1_cluster import run_mode1
-        run_mode1(config_path=args.config, output_dir=args.output)
+        run_mode1(config_path=args.config, output_dir=args.output, eps=args.eps, min_samples=args.min_samples)
         
     elif args.mode == '2':
         print(f"Running Mode 2 with config={args.config}, output={args.output}, mpi_np={args.mpi_np}")
@@ -42,8 +48,12 @@ def main():
             
     elif args.mode == '3':
         print(f"Running Mode 3 with config={args.config}, output={args.output}")
+        if args.eps is not None:
+            print(f"  Overriding eps={args.eps}")
+        if args.min_samples is not None:
+            print(f"  Overriding min_samples={args.min_samples}")
         from backend.mode3_null import run_mode3
-        run_mode3(config_path=args.config, output_dir=args.output)
+        run_mode3(config_path=args.config, output_dir=args.output, eps=args.eps, min_samples=args.min_samples)
         
     elif args.mode == '4':
         print(f"Running Mode 4 with config={args.config}, output={args.output}, mpi_np={args.mpi_np}")

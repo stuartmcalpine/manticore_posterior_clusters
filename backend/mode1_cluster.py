@@ -3,29 +3,37 @@ from backend.config_loader import load_config
 from backend.io import ensure_output_dir, save_clusters_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, enhanced_find_stable_haloes, analyze_mass_distribution_in_clusters
 
-def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering=True, 
-              mass_outlier_threshold=0.3, use_mass_distance=True):
+def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering=True,
+              mass_outlier_threshold=0.3, use_mass_distance=True, eps=None, min_samples=None):
     config = load_config(config_path)
     ensure_output_dir(output_dir)
-    
+
+    # Determine which eps and min_samples to use
+    clustering_eps = eps if eps is not None else config.mode1.eps
+    clustering_min_samples = min_samples if min_samples is not None else config.mode1.min_samples
+
     print("Loading MCMC data...")
     mcmc_data = load_data_with_radius_filter(config)
-    
+
     print(f"Loaded data from MCMC samples {config.mode1.mcmc_start} to {config.mode1.mcmc_end}")
     for mcmc_id, data in mcmc_data.items():
         print(f"MCMC {mcmc_id}: {len(data['SO/200_crit/TotalMass'])} haloes")
-    
-    print("Finding stable halo clusters...")
+
+    print(f"Finding stable halo clusters (eps={clustering_eps}, min_samples={clustering_min_samples})...")
     if use_mass_filtering:
         print(f"Using M200 mass filtering with threshold {mass_outlier_threshold} dex")
         stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = enhanced_find_stable_haloes(
-            mcmc_data, config, 
+            mcmc_data, config,
             mass_outlier_threshold=mass_outlier_threshold,
-            use_mass_distance=use_mass_distance
+            use_mass_distance=use_mass_distance,
+            eps=clustering_eps,
+            min_samples=clustering_min_samples
         )
     else:
         from backend.common_clustering import find_stable_haloes
-        stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = find_stable_haloes(mcmc_data, config)
+        stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = find_stable_haloes(
+            mcmc_data, config, eps=clustering_eps, min_samples=clustering_min_samples
+        )
     
     print(f"Found {len(stable_haloes)} stable halo clusters")
     
@@ -48,9 +56,9 @@ def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering
     
     if use_mass_filtering:
         analyze_mass_distribution_in_clusters(sorted_haloes)
-    
+
     print("Saving clusters to HDF5...")
-    fname = f"clusters_eps_{str(config.mode1.eps).replace('.','p')}_min_samples_{config.mode1.min_samples}.h5"
+    fname = f"clusters_eps_{str(clustering_eps).replace('.','p')}_min_samples_{clustering_min_samples}.h5"
     save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance, cluster_labels, config, output_dir,
             filename=fname)
     print("Mode 1 complete!")

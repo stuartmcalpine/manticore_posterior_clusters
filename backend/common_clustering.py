@@ -592,20 +592,26 @@ def analyze_mass_distribution_in_clusters(stable_haloes):
         print(f"  Outliers >0.3 dex (~2.0x): {outliers_03dex}/{len(m200_masses)}")
         print(f"  Outliers >0.5 dex (~3.2x): {outliers_05dex}/{len(m200_masses)}")
 
-def enhanced_find_stable_haloes(mcmc_data, config, 
+def enhanced_find_stable_haloes(mcmc_data, config,
                                mass_outlier_threshold=0.3,  # 0.3 dex = factor of ~2
                                use_mass_distance=True,
-                               mass_weighted_clustering=False):
+                               mass_weighted_clustering=False,
+                               eps=None,
+                               min_samples=None):
     """
     Wrapper function that can be used as a drop-in replacement for find_stable_haloes.
-    
-    Default mass_outlier_threshold of 0.3 dex means halos with M200 masses differing by more 
+
+    Default mass_outlier_threshold of 0.3 dex means halos with M200 masses differing by more
     than a factor of ~2 from the cluster mean will be filtered out.
     """
+    # Use provided values or fall back to config
+    clustering_eps = eps if eps is not None else config.mode1.eps
+    clustering_min_samples = min_samples if min_samples is not None else config.mode1.min_samples
+
     return find_stable_haloes_with_mass_filtering(
         mcmc_data, config,
-        eps=config.mode1.eps,
-        min_samples=config.mode1.min_samples,
+        eps=clustering_eps,
+        min_samples=clustering_min_samples,
         mass_outlier_threshold=mass_outlier_threshold,
         use_mass_distance=use_mass_distance,
         mass_weighted_clustering=mass_weighted_clustering

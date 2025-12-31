@@ -89,10 +89,14 @@ def load_random_control_data(config):
     
     return mcmc_data
 
-def run_mode3(config_path="config.toml", output_dir="output"):
+def run_mode3(config_path="config.toml", output_dir="output", eps=None, min_samples=None):
     config = load_config(config_path)
     ensure_output_dir(output_dir)
-    
+
+    # Determine which eps and min_samples to use
+    clustering_eps = eps if eps is not None else config.mode3.eps
+    clustering_min_samples = min_samples if min_samples is not None else config.mode3.min_samples
+
     print("Running Mode 3: Random control simulation analysis")
     print(f"Control simulations: {config.mode3.mcmc_start} to {config.mode3.mcmc_end}")
     print(f"Samplings per simulation: {config.mode3.num_samplings}")
@@ -100,20 +104,20 @@ def run_mode3(config_path="config.toml", output_dir="output"):
     print(f"M200 mass cut: {config.mode3.m200_mass_cut:.2e} M☉")
     print(f"Radius cut: {config.mode3.radius_cut} Mpc")
     print(f"Box size: {config.global_config.boxsize} Mpc")
-    
+
     print("Loading random control data with multiple observer samplings...")
     mcmc_data = load_random_control_data(config)
-    
+
     total_haloes = 0
     for virtual_mcmc_id, data in mcmc_data.items():
         n_haloes = len(data['SO/200_crit/TotalMass'])
         total_haloes += n_haloes
-    
+
     print(f"Total haloes across all virtual samples: {total_haloes}")
-    
-    print("Finding clusters in random control simulations...")
+
+    print(f"Finding clusters in random control simulations (eps={clustering_eps}, min_samples={clustering_min_samples})...")
     stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = find_stable_haloes(
-        mcmc_data, config, eps=config.mode3.eps, min_samples=config.mode3.min_samples
+        mcmc_data, config, eps=clustering_eps, min_samples=clustering_min_samples
     )
     
     print(f"Found {len(stable_haloes)} clusters in random control simulations")
