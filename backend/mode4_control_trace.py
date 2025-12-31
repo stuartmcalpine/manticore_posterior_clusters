@@ -59,9 +59,9 @@ class ControlHaloTracer:
         """Load and filter haloes from control simulation final snapshot"""
         filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
         
-        soap_data = SOAPData(filename, mass_cut=m200_mass_cut, radius_cut=radius_cut)
+        soap_data = SOAPData(filename, mass_cut=m200_mass_cut)
         soap_data.load_groups(properties=self.to_load, only_centrals=True)
-        soap_data.set_observer(self.observer_coords, skip_redshift=True)
+        soap_data.set_observer(self.observer_coords, skip_redshift=True, radius_cut=radius_cut)
         
         # Remove redshift
         del soap_data.data["redshift"]
