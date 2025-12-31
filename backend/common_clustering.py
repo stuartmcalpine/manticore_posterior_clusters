@@ -82,12 +82,18 @@ def enforce_mcmc_constraint(cluster_labels, positions, mcmc_ids):
     
     return cluster_labels
 
-def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, m200_masses, mcmc_ids, 
+def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, m200_masses, mcmc_ids,
                                             mass_outlier_threshold=0.3, use_mass_distance=False):
     """
     Post-process clusters to ensure at most one halo per MCMC per cluster,
     with additional mass-based filtering to exclude outliers.
-    
+
+    ALGORITHM:
+    1. First enforce MCMC constraint (position-based) to get unbiased sample
+    2. Calculate cluster statistics on cleaned sample (each MCMC contributes equally)
+    3. Filter mass outliers based on unbiased statistics
+    4. If use_mass_distance=True, re-apply MCMC constraint with mass+position
+
     Parameters:
     -----------
     cluster_labels : array
@@ -101,90 +107,120 @@ def enforce_mcmc_constraint_with_mass_filter(cluster_labels, positions, m200_mas
     mass_outlier_threshold : float
         Threshold in log-mass units for outlier detection (default 0.3 = ~2x mass difference)
     use_mass_distance : bool
-        Whether to use combined position+mass distance for selection
+        Whether to use combined position+mass distance for MCMC constraint selection
     """
     unique_clusters = np.unique(cluster_labels)
-    
+
     # Work in log-mass space
     log_m200_masses = np.log10(m200_masses)
-    
+
     for cluster_id in unique_clusters:
         if cluster_id == -1:  # Skip noise
             continue
-            
+
         cluster_mask = cluster_labels == cluster_id
         cluster_positions = positions[cluster_mask]
         cluster_log_m200_masses = log_m200_masses[cluster_mask]
         cluster_mcmc_ids = mcmc_ids[cluster_mask]
         cluster_indices = np.where(cluster_mask)[0]
-        
-        # Calculate cluster statistics in log-mass space
+
+        # STEP 1: Enforce MCMC constraint using POSITION ONLY
+        # This ensures unbiased statistics (each MCMC contributes at most once)
+        cluster_center = np.mean(cluster_positions, axis=0)
+        unique_mcmc_ids = np.unique(cluster_mcmc_ids)
+
+        for mcmc_id in unique_mcmc_ids:
+            mcmc_mask = cluster_mcmc_ids == mcmc_id
+            mcmc_indices_in_cluster = cluster_indices[mcmc_mask]
+
+            if len(mcmc_indices_in_cluster) > 1:
+                # Multiple halos from same MCMC - keep closest to position center
+                mcmc_positions = cluster_positions[mcmc_mask]
+                distances_to_center = np.linalg.norm(mcmc_positions - cluster_center, axis=1)
+                closest_idx = np.argmin(distances_to_center)
+
+                # Mark non-closest as noise
+                for i, global_idx in enumerate(mcmc_indices_in_cluster):
+                    if i != closest_idx:
+                        cluster_labels[global_idx] = -1
+
+        # Update masks after MCMC constraint enforcement
+        cluster_mask = cluster_labels == cluster_id
+        cluster_positions = positions[cluster_mask]
+        cluster_log_m200_masses = log_m200_masses[cluster_mask]
+        cluster_mcmc_ids = mcmc_ids[cluster_mask]
+        cluster_indices = np.where(cluster_mask)[0]
+
+        # STEP 2: Calculate unbiased cluster statistics
+        # Now each MCMC contributes at most one halo, so statistics are unbiased
+        if len(cluster_positions) == 0:
+            continue
+
         cluster_center = np.mean(cluster_positions, axis=0)
         cluster_mean_log_m200_mass = np.mean(cluster_log_m200_masses)
         cluster_log_m200_mass_std = np.std(cluster_log_m200_masses)
-        
-        # Identify mass outliers within the cluster (in log space)
-        if cluster_log_m200_mass_std > 0:
-            log_m200_mass_z_scores = np.abs((cluster_log_m200_masses - cluster_mean_log_m200_mass) / cluster_log_m200_mass_std)
-            # Convert threshold to standard deviations if needed
+
+        # STEP 3: Filter mass outliers based on unbiased statistics
+        if cluster_log_m200_mass_std > 0 and len(cluster_log_m200_masses) > 2:
             if mass_outlier_threshold < 1.0:
-                # Interpret as direct log-mass difference threshold
+                # Interpret as direct log-mass difference threshold (in dex)
                 log_m200_mass_deviations = np.abs(cluster_log_m200_masses - cluster_mean_log_m200_mass)
                 mass_outliers = log_m200_mass_deviations > mass_outlier_threshold
             else:
                 # Interpret as number of standard deviations
+                log_m200_mass_z_scores = np.abs((cluster_log_m200_masses - cluster_mean_log_m200_mass) / cluster_log_m200_mass_std)
                 mass_outliers = log_m200_mass_z_scores > mass_outlier_threshold
-            
+
             # Mark mass outliers as noise
             outlier_indices = cluster_indices[mass_outliers]
             for idx in outlier_indices:
                 cluster_labels[idx] = -1
-            
-            # Update masks after removing outliers
+
+        # STEP 4: Optional - if use_mass_distance, re-evaluate MCMC constraint with mass info
+        # This handles edge case where mass filtering might have created room for a better match
+        if use_mass_distance:
+            # Update masks after mass filtering
             cluster_mask = cluster_labels == cluster_id
             cluster_positions = positions[cluster_mask]
             cluster_log_m200_masses = log_m200_masses[cluster_mask]
             cluster_mcmc_ids = mcmc_ids[cluster_mask]
             cluster_indices = np.where(cluster_mask)[0]
-            
-            # Recalculate cluster center after filtering
-            if len(cluster_positions) > 0:
-                cluster_center = np.mean(cluster_positions, axis=0)
-                cluster_mean_log_m200_mass = np.mean(cluster_log_m200_masses)
-        
-        # Group by MCMC ID (after mass filtering)
-        unique_mcmc_ids = np.unique(cluster_mcmc_ids)
-        
-        for mcmc_id in unique_mcmc_ids:
-            mcmc_mask = cluster_mcmc_ids == mcmc_id
-            mcmc_indices_in_cluster = cluster_indices[mcmc_mask]
-            
-            if len(mcmc_indices_in_cluster) > 1:
-                # Multiple halos from same MCMC in this cluster
-                mcmc_positions = cluster_positions[mcmc_mask]
-                mcmc_log_m200_masses = cluster_log_m200_masses[mcmc_mask]
-                
-                if use_mass_distance:
+
+            if len(cluster_positions) == 0:
+                continue
+
+            # Recalculate center and mean mass
+            cluster_center = np.mean(cluster_positions, axis=0)
+            cluster_mean_log_m200_mass = np.mean(cluster_log_m200_masses)
+            unique_mcmc_ids = np.unique(cluster_mcmc_ids)
+
+            # This shouldn't find duplicates since we already enforced constraint,
+            # but it's here for robustness
+            for mcmc_id in unique_mcmc_ids:
+                mcmc_mask = cluster_mcmc_ids == mcmc_id
+                mcmc_indices_in_cluster = cluster_indices[mcmc_mask]
+
+                if len(mcmc_indices_in_cluster) > 1:
+                    # Multiple halos from same MCMC (shouldn't happen, but defensive)
+                    mcmc_positions = cluster_positions[mcmc_mask]
+                    mcmc_log_m200_masses = cluster_log_m200_masses[mcmc_mask]
+
                     # Use combined position + log-mass distance
                     pos_distances = np.linalg.norm(mcmc_positions - cluster_center, axis=1)
                     log_m200_mass_distances = np.abs(mcmc_log_m200_masses - cluster_mean_log_m200_mass)
-                    
+
                     # Normalize both distances and combine
                     pos_distances_norm = pos_distances / np.max(pos_distances) if np.max(pos_distances) > 0 else pos_distances
                     log_m200_mass_distances_norm = log_m200_mass_distances / np.max(log_m200_mass_distances) if np.max(log_m200_mass_distances) > 0 else log_m200_mass_distances
-                    
+
                     combined_distances = pos_distances_norm + log_m200_mass_distances_norm
                     closest_idx = np.argmin(combined_distances)
-                else:
-                    # Use only position distance (original method)
-                    distances_to_center = np.linalg.norm(mcmc_positions - cluster_center, axis=1)
-                    closest_idx = np.argmin(distances_to_center)
-                
-                # Keep only the closest one, mark others as noise
-                for i, global_idx in enumerate(mcmc_indices_in_cluster):
-                    if i != closest_idx:
-                        cluster_labels[global_idx] = -1
-    
+
+                    # Keep only the closest one
+                    for i, global_idx in enumerate(mcmc_indices_in_cluster):
+                        if i != closest_idx:
+                            cluster_labels[global_idx] = -1
+
     return cluster_labels
 
 def combine_haloes(mcmc_data):
