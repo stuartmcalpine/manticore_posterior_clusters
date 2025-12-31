@@ -24,7 +24,42 @@ def ensure_output_dir(output_dir):
 def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance, cluster_labels, config, output_dir, filename="clusters.h5"):
     filepath = os.path.join(output_dir, filename)
     
+    # Apply filtering criteria
+    m200_cut = config.mode1.m200_mass_cut
+    size_cut = config.mode2.min_cluster_size
+    
+    filtered_haloes = [
+        cluster for cluster in stable_haloes 
+        if cluster['mean_m200_mass'] >= m200_cut and cluster['cluster_size'] >= size_cut
+    ]
+    
+    print(f"\nFiltering associations:")
+    print(f"  Total associations found: {len(stable_haloes)}")
+    print(f"  M200 cut: {m200_cut:.2e} Msol")
+    print(f"  Size cut: {size_cut} members")
+    print(f"  Associations passing cuts: {len(filtered_haloes)}")
+    
+    if len(filtered_haloes) == 0:
+        print("Warning: No associations pass the filtering criteria!")
+        # Still create the file with empty groups
+        with h5py.File(filepath, 'w') as f:
+            meta_grp = f.create_group('metadata')
+            meta_grp.attrs['mcmc_start'] = config.mode1.mcmc_start
+            meta_grp.attrs['mcmc_end'] = config.mode1.mcmc_end
+            meta_grp.attrs['eps'] = config.mode1.eps
+            meta_grp.attrs['min_samples'] = config.mode1.min_samples
+            meta_grp.attrs['m200_mass_cut'] = config.mode1.m200_mass_cut
+            meta_grp.attrs['radius_cut'] = config.mode1.radius_cut
+            meta_grp.attrs['basedir'] = config.global_config.basedir
+            meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
+            f.create_group('summary')
+            f.create_group('posterior')
+        return
+    
+    observer = np.array(config.global_config.observer_coords)
+    
     with h5py.File(filepath, 'w') as f:
+        # Metadata group
         meta_grp = f.create_group('metadata')
         meta_grp.attrs['mcmc_start'] = config.mode1.mcmc_start
         meta_grp.attrs['mcmc_end'] = config.mode1.mcmc_end
@@ -35,47 +70,87 @@ def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance
         meta_grp.attrs['basedir'] = config.global_config.basedir
         meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
         
-        all_data_grp = f.create_group('all_haloes')
-        all_data_grp.create_dataset('positions', data=positions)
-        all_data_grp.create_dataset('m200_masses', data=m200_masses)
-        all_data_grp.create_dataset('cluster_labels', data=cluster_labels)
+        # Summary group
+        summary_grp = f.create_group('summary')
+        n_clusters = len(filtered_haloes)
         
-        prov_grp = all_data_grp.create_group('provenance')
-        mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
-        orig_indices = np.array([p['original_index'] for p in halo_provenance])
-        prov_grp.create_dataset('mcmc_ids', data=mcmc_ids)
-        prov_grp.create_dataset('original_indices', data=orig_indices)
+        # Initialize summary data structures
+        summary_data = defaultdict(list)
+        cluster_sizes = []
+        association_ids = []
         
-        clusters_grp = f.create_group('clusters')
-        for i, cluster in enumerate(stable_haloes):
-            cluster_grp = clusters_grp.create_group(f'cluster_{cluster["cluster_id"]}')
-            cluster_grp.attrs['cluster_id'] = cluster['cluster_id']
-            cluster_grp.attrs['cluster_size'] = cluster['cluster_size']
-            cluster_grp.attrs['mean_position'] = cluster['mean_position']
-            cluster_grp.attrs['mean_m200_mass'] = cluster['mean_m200_mass']
-            cluster_grp.attrs['mean_subhalo_mass'] = cluster.get('mean_subhalo_mass', np.nan)
-            cluster_grp.attrs['mean_m500'] = cluster.get('mean_m500', np.nan)
-            cluster_grp.attrs['position_std'] = cluster['position_std']
-            cluster_grp.attrs['m200_mass_std'] = cluster['m200_mass_std']
-            cluster_grp.attrs['subhalo_mass_std'] = cluster.get('subhalo_mass_std', np.nan)
-            cluster_grp.attrs['m500_std'] = cluster.get('m500_std', np.nan)
-            cluster_grp.attrs['log10_m200_mass_std'] = cluster['log10_m200_mass_std']
-            cluster_grp.attrs['log10_m500_std'] = cluster['log10_m500_std']
-            cluster_grp.attrs['axis_ratio_ba'] = cluster.get('axis_ratio_ba', np.nan)
-            cluster_grp.attrs['axis_ratio_ca'] = cluster.get('axis_ratio_ca', np.nan)
-            cluster_grp.attrs['asphericity'] = cluster.get('asphericity', np.nan)
-            cluster_grp.attrs['prolateness'] = cluster.get('prolateness', np.nan)
-
-            member_grp = cluster_grp.create_group('members')
+        for cluster in filtered_haloes:
+            association_ids.append(cluster['cluster_id'])
+            cluster_sizes.append(cluster['cluster_size'])
             
-            # Save all member data properties
+            member_data = cluster['member_data']
+            
+            # Process all scalar properties
+            for key, data in member_data.items():
+                # Skip identifiers and non-numeric data
+                if key in ['mcmc/id', 'halo/original/index']:
+                    continue
+                
+                # Handle scalar properties (masses, concentrations, ra, dec, dist, etc.)
+                if isinstance(data, np.ndarray) and data.ndim == 1:
+                    # Filter out NaN values for statistics
+                    valid_data = data[~np.isnan(data)]
+                    dataset_name = key.replace('/', '_')
+                    if len(valid_data) > 0:
+                        summary_data[dataset_name].append([
+                            np.median(valid_data),
+                            np.percentile(valid_data, 25),
+                            np.percentile(valid_data, 75)
+                        ])
+                    else:
+                        summary_data[dataset_name].append([np.nan, np.nan, np.nan])
+                
+                # Handle 3D vector properties (positions, velocities) - compute magnitudes
+                elif isinstance(data, np.ndarray) and data.ndim == 2 and data.shape[1] == 3:
+                    magnitudes = np.linalg.norm(data, axis=1)
+                    valid_mags = magnitudes[~np.isnan(magnitudes)]
+                    dataset_name = key.replace('/', '_') + '_magnitude'
+                    if len(valid_mags) > 0:
+                        summary_data[dataset_name].append([
+                            np.median(valid_mags),
+                            np.percentile(valid_mags, 25),
+                            np.percentile(valid_mags, 75)
+                        ])
+                    else:
+                        summary_data[dataset_name].append([np.nan, np.nan, np.nan])
+        
+        # Save summary datasets
+        summary_grp.create_dataset('association_id', data=np.array(association_ids))
+        summary_grp.create_dataset('cluster_size', data=np.array(cluster_sizes))
+        
+        for key, values in summary_data.items():
+            summary_grp.create_dataset(key, data=np.array(values))
+        
+        # Posterior group (formerly clusters)
+        posterior_grp = f.create_group('posterior')
+        
+        for cluster in filtered_haloes:
+            assoc_grp = posterior_grp.create_group(f'association_{cluster["cluster_id"]}')
+            assoc_grp.attrs['association_id'] = cluster['cluster_id']
+            assoc_grp.attrs['cluster_size'] = cluster['cluster_size']
+            assoc_grp.attrs['mean_position'] = cluster['mean_position']
+            assoc_grp.attrs['mean_m200_mass'] = cluster['mean_m200_mass']
+            assoc_grp.attrs['mean_subhalo_mass'] = cluster.get('mean_subhalo_mass', np.nan)
+            assoc_grp.attrs['mean_m500'] = cluster.get('mean_m500', np.nan)
+            assoc_grp.attrs['position_std'] = cluster['position_std']
+            assoc_grp.attrs['m200_mass_std'] = cluster['m200_mass_std']
+            assoc_grp.attrs['subhalo_mass_std'] = cluster.get('subhalo_mass_std', np.nan)
+            assoc_grp.attrs['m500_std'] = cluster.get('m500_std', np.nan)
+            assoc_grp.attrs['log10_m200_mass_std'] = cluster['log10_m200_mass_std']
+            assoc_grp.attrs['log10_m500_std'] = cluster['log10_m500_std']
+            assoc_grp.attrs['axis_ratio_ba'] = cluster.get('axis_ratio_ba', np.nan)
+            assoc_grp.attrs['axis_ratio_ca'] = cluster.get('axis_ratio_ca', np.nan)
+            assoc_grp.attrs['asphericity'] = cluster.get('asphericity', np.nan)
+            assoc_grp.attrs['prolateness'] = cluster.get('prolateness', np.nan)
+            
+            # Save all member data properties directly in the association group
             for key, data in cluster['member_data'].items():
-                member_grp.create_dataset(key.replace('/', '_'), data=data)
-            
-            mcmc_ids = np.array([m['mcmc_id'] for m in cluster['members']])
-            orig_indices = np.array([m['original_index'] for m in cluster['members']])
-            member_grp.create_dataset('mcmc_ids', data=mcmc_ids)
-            member_grp.create_dataset('original_indices', data=orig_indices)
+                assoc_grp.create_dataset(key.replace('/', '_'), data=data)
 
 def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
         min_m200_mass=1e14):
@@ -89,54 +164,66 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
         for key in meta_grp.attrs.keys():
             metadata[key] = meta_grp.attrs[key]
         
-        clusters_grp = f['clusters']
-        for cluster_name in clusters_grp.keys():
-            cluster_grp = clusters_grp[cluster_name]
+        # Handle both old 'clusters' and new 'posterior' group names
+        if 'posterior' in f:
+            posterior_grp = f['posterior']
+            group_prefix = 'association_'
+        elif 'clusters' in f:
+            posterior_grp = f['clusters']
+            group_prefix = 'cluster_'
+        else:
+            return [], metadata
+        
+        for assoc_name in posterior_grp.keys():
+            assoc_grp = posterior_grp[assoc_name]
             
             # Check M200 mass filter first before loading any member data
-            mean_m200_mass = float(cluster_grp.attrs['mean_m200_mass'])
+            mean_m200_mass = float(assoc_grp.attrs['mean_m200_mass'])
             if mean_m200_mass < min_m200_mass:
                 continue
             
-            member_grp = cluster_grp['members']
-            mcmc_ids = member_grp['mcmc_ids'][:]
-            orig_indices = member_grp['original_indices'][:]
-            
-            members = []
-            for i in range(len(mcmc_ids)):
-                members.append({
-                    'mcmc_id': int(mcmc_ids[i]),
-                    'original_index': int(orig_indices[i])
-                })
-            
             # Load all member data properties
             member_data = {}
-            for key in member_grp.keys():
-                if key not in ['mcmc_ids', 'original_indices']:
-                    # Convert back to original property name format
-                    original_key = key.replace('_', '/')
+            for key in assoc_grp.keys():
+                # Convert back to original property name format
+                original_key = key.replace('_', '/')
 
-                    if minimal and original_key not in ["SO/200_crit/CentreOfMass", "SO/200_crit/TotalMass"]:
-                        continue
-                    member_data[original_key] = member_grp[key][:]
+                if minimal and original_key not in ["SO/200_crit/CentreOfMass", "SO/200_crit/TotalMass", 
+                                                     "mcmc/id", "halo/original/index"]:
+                    continue
+                member_data[original_key] = assoc_grp[key][:]
+            
+            # Reconstruct members list from member_data for backwards compatibility
+            members = []
+            if 'mcmc/id' in member_data and 'halo/original/index' in member_data:
+                mcmc_ids = member_data['mcmc/id']
+                orig_indices = member_data['halo/original/index']
+                for i in range(len(mcmc_ids)):
+                    members.append({
+                        'mcmc_id': int(mcmc_ids[i]),
+                        'original_index': int(orig_indices[i])
+                    })
+            
+            # Handle both old and new attribute names
+            cluster_id_key = 'association_id' if 'association_id' in assoc_grp.attrs else 'cluster_id'
             
             cluster = {
-                'cluster_id': int(cluster_grp.attrs['cluster_id']),
-                'cluster_size': int(cluster_grp.attrs['cluster_size']),
-                'mean_position': cluster_grp.attrs['mean_position'],
+                'cluster_id': int(assoc_grp.attrs[cluster_id_key]),
+                'cluster_size': int(assoc_grp.attrs['cluster_size']),
+                'mean_position': assoc_grp.attrs['mean_position'],
                 'mean_m200_mass': mean_m200_mass,
-                'mean_subhalo_mass': float(cluster_grp.attrs.get('mean_subhalo_mass', np.nan)),
-                'mean_m500': float(cluster_grp.attrs.get('mean_m500', np.nan)),
-                'position_std': cluster_grp.attrs['position_std'],
-                'm200_mass_std': float(cluster_grp.attrs['m200_mass_std']),
-                'log10_m200_mass_std': float(cluster_grp.attrs['log10_m200_mass_std']),
-                'log10_m500_std': float(cluster_grp.attrs['log10_m500_std']),
-                'subhalo_mass_std': float(cluster_grp.attrs.get('subhalo_mass_std', np.nan)),
-                'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
-                'axis_ratio_ba': float(cluster_grp.attrs.get('axis_ratio_ba', np.nan)),
-                'axis_ratio_ca': float(cluster_grp.attrs.get('axis_ratio_ca', np.nan)),
-                'asphericity': float(cluster_grp.attrs.get('asphericity', np.nan)),
-                'prolateness': float(cluster_grp.attrs.get('prolateness', np.nan)),
+                'mean_subhalo_mass': float(assoc_grp.attrs.get('mean_subhalo_mass', np.nan)),
+                'mean_m500': float(assoc_grp.attrs.get('mean_m500', np.nan)),
+                'position_std': assoc_grp.attrs['position_std'],
+                'm200_mass_std': float(assoc_grp.attrs['m200_mass_std']),
+                'log10_m200_mass_std': float(assoc_grp.attrs['log10_m200_mass_std']),
+                'log10_m500_std': float(assoc_grp.attrs['log10_m500_std']),
+                'subhalo_mass_std': float(assoc_grp.attrs.get('subhalo_mass_std', np.nan)),
+                'm500_std': float(assoc_grp.attrs.get('m500_std', np.nan)),
+                'axis_ratio_ba': float(assoc_grp.attrs.get('axis_ratio_ba', np.nan)),
+                'axis_ratio_ca': float(assoc_grp.attrs.get('axis_ratio_ca', np.nan)),
+                'asphericity': float(assoc_grp.attrs.get('asphericity', np.nan)),
+                'prolateness': float(assoc_grp.attrs.get('prolateness', np.nan)),
                 'members': members,
                 'member_data': member_data
             }
@@ -406,16 +493,26 @@ def find_clusters_in_window(output_dir, filename, center_position, window_size):
 
    try:
        with h5py.File(filepath, 'r') as f:
-           clusters_grp = f['clusters']
+           # Handle both old 'clusters' and new 'posterior' group names
+           if 'posterior' in f:
+               posterior_grp = f['posterior']
+           elif 'clusters' in f:
+               posterior_grp = f['clusters']
+           else:
+               return []
 
-           for cluster_name in clusters_grp.keys():
-               cluster_grp = clusters_grp[cluster_name]
-               centroid = cluster_grp.attrs['mean_position']
+           for assoc_name in posterior_grp.keys():
+               assoc_grp = posterior_grp[assoc_name]
+               centroid = assoc_grp.attrs['mean_position']
 
                # Check if centroid is within window
                distance = np.linalg.norm(centroid - center_position)
                if distance <= window_size:
-                   cluster_id = int(cluster_grp.attrs['cluster_id'])
+                   # Handle both old and new attribute names
+                   if 'association_id' in assoc_grp.attrs:
+                       cluster_id = int(assoc_grp.attrs['association_id'])
+                   else:
+                       cluster_id = int(assoc_grp.attrs['cluster_id'])
                    window_cluster_ids.append(cluster_id)
 
    except FileNotFoundError:
@@ -447,41 +544,49 @@ def load_single_cluster_members(output_dir, filename, cluster_id):
 
    try:
        with h5py.File(filepath, 'r') as f:
-           clusters_grp = f['clusters']
-           cluster_grp_name = f'cluster_{cluster_id}'
-
-           if cluster_grp_name not in clusters_grp:
+           # Handle both old 'clusters' and new 'posterior' group names
+           if 'posterior' in f:
+               posterior_grp = f['posterior']
+               assoc_grp_name = f'association_{cluster_id}'
+           elif 'clusters' in f:
+               posterior_grp = f['clusters']
+               assoc_grp_name = f'cluster_{cluster_id}'
+           else:
                return None
 
-           cluster_grp = clusters_grp[cluster_grp_name]
-           member_grp = cluster_grp['members']
+           if assoc_grp_name not in posterior_grp:
+               return None
+
+           assoc_grp = posterior_grp[assoc_grp_name]
+
+           # Handle both old and new attribute names
+           cluster_id_key = 'association_id' if 'association_id' in assoc_grp.attrs else 'cluster_id'
 
            # Load cluster metadata
            cluster_data = {
-               'cluster_id': int(cluster_grp.attrs['cluster_id']),
-               'cluster_size': int(cluster_grp.attrs['cluster_size']),
-               'mean_position': cluster_grp.attrs['mean_position'],
-               'mean_m200_mass': float(cluster_grp.attrs['mean_m200_mass']),
-               'mean_subhalo_mass': float(cluster_grp.attrs.get('mean_subhalo_mass', np.nan)),
-               'mean_m500': float(cluster_grp.attrs.get('mean_m500', np.nan)),
-               'position_std': cluster_grp.attrs['position_std'],
-               'm200_mass_std': float(cluster_grp.attrs['m200_mass_std']),
-               'subhalo_mass_std': float(cluster_grp.attrs.get('subhalo_mass_std', np.nan)),
-               'm500_std': float(cluster_grp.attrs.get('m500_std', np.nan)),
-               'log10_m200_std': float(cluster_grp.attrs.get('log10_m200_std', np.nan)),
-               'log10_m500_std': float(cluster_grp.attrs.get('log10_m500_std', np.nan)),
-               'axis_ratio_ba': float(cluster_grp.attrs.get('axis_ratio_ba', np.nan)),
-               'axis_ratio_ca': float(cluster_grp.attrs.get('axis_ratio_ca', np.nan)),
-               'asphericity': float(cluster_grp.attrs.get('asphericity', np.nan)),
-               'prolateness': float(cluster_grp.attrs.get('prolateness', np.nan)),
+               'cluster_id': int(assoc_grp.attrs[cluster_id_key]),
+               'cluster_size': int(assoc_grp.attrs['cluster_size']),
+               'mean_position': assoc_grp.attrs['mean_position'],
+               'mean_m200_mass': float(assoc_grp.attrs['mean_m200_mass']),
+               'mean_subhalo_mass': float(assoc_grp.attrs.get('mean_subhalo_mass', np.nan)),
+               'mean_m500': float(assoc_grp.attrs.get('mean_m500', np.nan)),
+               'position_std': assoc_grp.attrs['position_std'],
+               'm200_mass_std': float(assoc_grp.attrs['m200_mass_std']),
+               'subhalo_mass_std': float(assoc_grp.attrs.get('subhalo_mass_std', np.nan)),
+               'm500_std': float(assoc_grp.attrs.get('m500_std', np.nan)),
+               'log10_m200_std': float(assoc_grp.attrs.get('log10_m200_std', np.nan)),
+               'log10_m500_std': float(assoc_grp.attrs.get('log10_m500_std', np.nan)),
+               'axis_ratio_ba': float(assoc_grp.attrs.get('axis_ratio_ba', np.nan)),
+               'axis_ratio_ca': float(assoc_grp.attrs.get('axis_ratio_ca', np.nan)),
+               'asphericity': float(assoc_grp.attrs.get('asphericity', np.nan)),
+               'prolateness': float(assoc_grp.attrs.get('prolateness', np.nan)),
            }
 
            # Load member data
            member_data = {}
-           for key in member_grp.keys():
-               if key not in ['mcmc_ids', 'original_indices']:
-                   original_key = key.replace('_', '/')
-                   member_data[original_key] = member_grp[key][:]
+           for key in assoc_grp.keys():
+               original_key = key.replace('_', '/')
+               member_data[original_key] = assoc_grp[key][:]
 
            cluster_data['member_data'] = member_data
 

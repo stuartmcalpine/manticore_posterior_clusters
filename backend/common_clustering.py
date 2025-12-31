@@ -199,6 +199,10 @@ def combine_haloes(mcmc_data):
     for key in property_keys:
         combined_data[key] = []
     
+    # NEW: Initialize arrays for provenance information
+    combined_data['mcmc_id'] = []
+    combined_data['halo_original_index'] = []
+    
     for mcmc_id, data in mcmc_data.items():
         n_haloes = len(data['SO/200_crit/TotalMass'])
         
@@ -216,7 +220,11 @@ def combine_haloes(mcmc_data):
                     fill_shape = (n_haloes,)
                 combined_data[key].append(np.full(fill_shape, np.nan))
         
-        # Track provenance
+        # NEW: Add provenance as arrays
+        combined_data['mcmc_id'].append(np.full(n_haloes, mcmc_id, dtype=int))
+        combined_data['halo_original_index'].append(np.arange(n_haloes, dtype=int))
+        
+        # Track provenance (still used for backwards compatibility)
         for i in range(n_haloes):
             halo_provenance.append({'mcmc_id': mcmc_id, 'original_index': i})
     
@@ -227,6 +235,10 @@ def combine_haloes(mcmc_data):
                 combined_data[key] = np.concatenate(combined_data[key])
             else:
                 combined_data[key] = np.vstack(combined_data[key])
+    
+    # NEW: Stack provenance arrays
+    combined_data['mcmc_id'] = np.concatenate(combined_data['mcmc_id'])
+    combined_data['halo_original_index'] = np.concatenate(combined_data['halo_original_index'])
     
     return combined_data, halo_provenance
 
@@ -263,9 +275,9 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     
     for mcmc_id in range(config.mode1.mcmc_start, config.mode1.mcmc_end + 1):
         filename = os.path.join(config.global_config.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
-        soap_data = SOAPData(filename, radius_cut=initial_radius_cut)
+        soap_data = SOAPData(filename)
         soap_data.load_groups(properties=to_load, only_centrals=True)
-        soap_data.set_observer(config.global_config.observer_coords, skip_redshift=True)
+        soap_data.set_observer(config.global_config.observer_coords, skip_redshift=True, radius_cut=initial_radius_cut)
        
         # Don't want to keep redshift
         del soap_data.data["redshift"]
