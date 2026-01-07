@@ -9,7 +9,8 @@ class PatchStacker:
         self.patch_extractor = patch_extractor
     
     def stack_patches(self, coord_list, patch_size_r500=10.0, npix=256,
-                 min_coverage=0.9, max_patches=None, weights=None,
+                 min_coverage=0.9, max_patches=None, weights=None, weight_vars=None,
+                 velocity_weighting_scheme='tanimura',
                  subtract_background=True, bg_inner_radius_deg=5.0, 
                  bg_outer_radius_deg=7.0):
         """
@@ -29,6 +30,14 @@ class PatchStacker:
             Optional maximum number of patches to stack
         weights : array-like or None
             Optional per-cluster weights (e.g. LOS velocities for kSZ)
+        weight_vars : array-like or None
+            Optional per-cluster weight variances (e.g. velocity variances from posterior)
+        velocity_weighting_scheme : str
+            Weighting scheme for kSZ stacking. One of:
+            - 'tanimura': w_i = v_i / σ²_T,i (original Tanimura estimator)
+            - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
+            - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
+            - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
         subtract_background : bool
             Whether to subtract background from outer annulus
         bg_inner_radius_deg : float
@@ -48,9 +57,18 @@ class PatchStacker:
                     f"({len(weights)} vs {len(coord_list)})"
                 )
         
+        if weight_vars is not None:
+            weight_vars = np.asarray(weight_vars)
+            if len(weight_vars) != len(coord_list):
+                raise ValueError(
+                    f"weight_vars must have same length as coord_list "
+                    f"({len(weight_vars)} vs {len(coord_list)})"
+                )
+        
         valid_patches = []
         valid_coords = []
         valid_weights = [] if weights is not None else None
+        valid_weight_vars = [] if weight_vars is not None else None
         valid_r500s = []
         rejection_stats = {'insufficient_coverage': 0, 'extraction_error': 0, 
                           'rescaling_failed': 0}
@@ -122,6 +140,8 @@ class PatchStacker:
                 valid_r500s.append(r500_deg)
                 if valid_weights is not None:
                     valid_weights.append(weights[i])
+                if valid_weight_vars is not None:
+                    valid_weight_vars.append(weight_vars[i])
                 
             except Exception as e:
                 print(f"   Error extracting patch {i}: {e}")
@@ -137,15 +157,22 @@ class PatchStacker:
               f"{rejection_stats['extraction_error']} (errors), "
               f"{rejection_stats['rescaling_failed']} (rescaling failed)")
         
+        # Convert to arrays
+        if valid_weights is not None:
+            valid_weights = np.array(valid_weights)
+        if valid_weight_vars is not None:
+            valid_weight_vars = np.array(valid_weight_vars)
+        
         # Stack patches
         stacked_patch, stacking_info = self._compute_stack(
             valid_patches, valid_coords, patch_size_r500, npix,
             rejection_stats, valid_weights=valid_weights,
-            valid_r500s=valid_r500s
+            valid_r500s=valid_r500s, valid_weight_vars=valid_weight_vars,
+            velocity_weighting_scheme=velocity_weighting_scheme
         )
         
         return stacked_patch, stacking_info, rejection_stats
-    
+
     def _rescale_to_r500(self, patch_data, patch_size_deg, r500_deg, npix, patch_size_r500):
         """
         Rescale a patch from angular (degree) coordinates to r/r500 coordinates.
@@ -275,88 +302,140 @@ class PatchStacker:
         return patch_data
 
     def _compute_stack(self, valid_patches, valid_coords, patch_size_r500, npix,
-                       rejection_stats, valid_weights=None, valid_r500s=None):
-        """
-        Compute the final stacked patch.
+                      rejection_stats, valid_weights=None, valid_r500s=None,
+                      valid_weight_vars=None, velocity_weighting_scheme='tanimura'):
+        """Compute the stacked patch with proper weighting"""
+    
+        patch_stack = np.array(valid_patches)
+        n_patches = len(valid_patches)
+        # Add right after: patch_stack = np.array(valid_patches)
+        print(f"    npix parameter: {npix}")
+        print(f"    patch_stack.shape: {patch_stack.shape}")
+        actual_npix = patch_stack.shape[1]
+        actual_center = actual_npix // 2
+        print(f"    actual center: [{actual_center},{actual_center}]")
+    
+        # Track finite values
+        finite_mask = np.isfinite(patch_stack)
+    
+        # Calculate variance of each patch (σ²_T,i)
+        variances = np.nanvar(patch_stack, axis=(1, 2))
+        variances = np.maximum(variances, 1e-20)  # Prevent division by zero
+    
+        w = valid_weights  # velocities
+    
+        if w is not None:
+            # DEBUG - add this block temporarily
+            print(f"\n  DEBUG _compute_stack:")
+            print(f"    n_patches: {n_patches}")
+            print(f"    velocity_weighting_scheme: {velocity_weighting_scheme}")
+            print(f"    w (velocities): min={np.min(w):.1f}, max={np.max(w):.1f}, mean={np.mean(w):.1f}")
+            print(f"    Fraction w < 0: {np.mean(w < 0):.1%}")
+            if valid_weight_vars is not None:
+                print(f"    valid_weight_vars: min={np.min(valid_weight_vars):.1f}, max={np.max(valid_weight_vars):.1f}")
+            print(f"    variances (CMB): min={np.min(variances):.2e}, max={np.max(variances):.2e}")
+            # END DEBUG
 
-        If valid_weights is None:
-            - Use simple unweighted mean (backwards compatible).
-        If valid_weights is not None:
-            - Use Tanimura-style weighted stack with variance normalization.
-        """
-        patch_stack = np.array(valid_patches)  # shape: (N, ny, nx)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-
-            if valid_weights is None:
-                # Unweighted stack
-                stacked_patch = np.nanmean(patch_stack, axis=0)
-                stacked_std = np.nanstd(patch_stack, axis=0)
-                n_contributing = np.sum(np.isfinite(patch_stack), axis=0)
+            # Validate weight_vars if needed for non-tanimura schemes
+            if velocity_weighting_scheme != 'tanimura':
+                if valid_weight_vars is None:
+                    raise ValueError(
+                        f"velocity_weighting_scheme='{velocity_weighting_scheme}' "
+                        f"requires valid_weight_vars (velocity variances)"
+                    )
+                valid_weight_vars = np.array(valid_weight_vars)
+                if len(valid_weight_vars) != n_patches:
+                    raise ValueError(
+                        f"valid_weight_vars length mismatch: "
+                        f"{len(valid_weight_vars)} vs {n_patches}"
+                    )
+                # Prevent division by zero
+                valid_weight_vars = np.maximum(valid_weight_vars, 1e-20)
+    
+            # Compute numerator and denominator weights based on scheme
+            # All schemes: result = Σ(T × num_weight) / Σ(den_weight)
+    
+            if velocity_weighting_scheme == 'tanimura':
+                # Tanimura: w_i = v_i / σ²_T,i
+                num_weights = w / variances
+                den_weights = np.abs(w) / variances
+    
+            elif velocity_weighting_scheme == 'product':
+                # Product: w_i = v_i / (σ²_T,i · σ²_v,i)
+                num_weights = w / (variances * valid_weight_vars)
+                den_weights = np.abs(w) / (variances * valid_weight_vars)
+    
+            elif velocity_weighting_scheme == 'velocity_snr':
+                # Velocity S/N: w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
+                sigma_v = np.sqrt(valid_weight_vars)
+                num_weights = w * np.abs(w) / (variances * sigma_v)
+                den_weights = w**2 / (variances * sigma_v)
+    
+            elif velocity_weighting_scheme == 'velocity_snr_direct':
+                # Direct S/N: w_i = v_i · SNR_v,i / σ²_T,i
+                # where SNR_v,i = |v_i| / σ_v,i
+                sigma_v = np.sqrt(valid_weight_vars)
+                snr_v = np.abs(w) / sigma_v
+                num_weights = w * snr_v / variances
+                den_weights = np.abs(w) * snr_v / variances
+    
             else:
-                # Weighted stack with variance normalization
-                w = np.asarray(valid_weights)  # shape: (N,)
-
-                # Compute variance for each patch
-                variances = np.zeros(len(valid_patches))
-                for i, patch in enumerate(valid_patches):
-                    finite_values = patch[np.isfinite(patch)]
-                    if len(finite_values) > 0:
-                        variances[i] = np.var(finite_values)
-                    else:
-                        variances[i] = 1.0
-
-                variances[variances < 1e-10] = 1e-10
-
-                # Weight with variance normalization
-                weights_over_var = w / variances
-                weights_over_var_2d = weights_over_var[:, None, None]
-
-                abs_weights_over_var = np.abs(w) / variances
-                abs_weights_over_var_2d = abs_weights_over_var[:, None, None]
-
-                finite_mask = np.isfinite(patch_stack)
-
-                num = np.nansum(patch_stack * weights_over_var_2d, axis=0)
-                den = np.sum(abs_weights_over_var_2d * finite_mask, axis=0)
-
-                stacked_patch = np.full_like(num, np.nan, dtype=float)
-                valid = den > 0
-                stacked_patch[valid] = num[valid] / den[valid]
-
-                n_contributing = np.sum(finite_mask, axis=0)
-                stacked_std = np.nanstd(patch_stack, axis=0)
-
-                print(f"   Variance-weighted stack: mean variance = {np.mean(variances):.2e}")
-                print(f"   Variance range: [{np.min(variances):.2e}, {np.max(variances):.2e}]")
-
-        # Calculate standard error
-        stacked_error = stacked_std / np.sqrt(np.maximum(n_contributing, 1))
-
-        median_r500 = np.median(valid_r500s) if valid_r500s else None
-
-        stacking_info = {
-            'n_patches': len(valid_patches),
-            'n_rejected': len(valid_coords) + sum(rejection_stats.values()) - len(valid_patches),
-            'rejection_stats': rejection_stats,
-            'patch_size_r500': patch_size_r500,
-            'npix': npix,
-            'valid_coords': valid_coords,
-            'stacked_std': stacked_std,
-            'stacked_error': stacked_error,
-            'n_contributing': n_contributing,
-            'weights_used': valid_weights is not None,
-            'variance_weighted': valid_weights is not None,
-            'coord_system': 'r500_units',
-            'extent_description': f"±{patch_size_r500/2:.1f} × R500",
-            'median_r500_deg': median_r500,
-        }
-
-        print(f"   Stack dimensions: {stacked_patch.shape}")
-        print(f"   Coordinate system: r500_units (±{patch_size_r500/2:.1f} × R500)")
-        print(f"   Valid pixel range: {np.nanmin(n_contributing)}-{np.nanmax(n_contributing)} patches")
-        if valid_weights is not None:
-            print(f"   Weighted stack: using {len(valid_patches)} weights with variance normalization")
-
+                raise ValueError(f"Unknown velocity_weighting_scheme: {velocity_weighting_scheme}")
+    
+            # Reshape for broadcasting: (n_patches,) -> (n_patches, 1, 1)
+            num_weights_2d = num_weights[:, np.newaxis, np.newaxis]
+            den_weights_2d = den_weights[:, np.newaxis, np.newaxis]
+    
+            # Compute weighted stack
+            # Replace NaN with 0 for summation (masked pixels don't contribute)
+            patch_stack_filled = np.where(finite_mask, patch_stack, 0.0)
+    
+            num = np.sum(patch_stack_filled * num_weights_2d, axis=0)
+            den = np.sum(finite_mask.astype(float) * den_weights_2d, axis=0)
+    
+            # Compute result where denominator is non-zero
+            stacked_patch = np.full((npix, npix), np.nan)
+            valid = den > 0
+            # Add this debug output INSIDE _compute_stack, after computing num and den
+            # Right before: stacked_patch[valid] = num[valid] / den[valid]
+            
+            # DEBUG - trace computation
+            print(f"\n  DEBUG computation:")
+            print(f"    num_weights: min={np.min(num_weights):.2e}, max={np.max(num_weights):.2e}, mean={np.mean(num_weights):.2e}")
+            print(f"    den_weights: min={np.min(den_weights):.2e}, max={np.max(den_weights):.2e}, mean={np.mean(den_weights):.2e}")
+            print(f"    All num_weights < 0? {np.all(num_weights < 0)}")
+            print(f"    All den_weights > 0? {np.all(den_weights > 0)}")
+            
+            # Check central pixel
+            center = npix // 2
+            print(f"\n  Central pixel [{center},{center}]:")
+            print(f"    patch values at center: min={np.min(patch_stack[:, center, center]):.3f}, max={np.max(patch_stack[:, center, center]):.3f}, mean={np.mean(patch_stack[:, center, center]):.3f}")
+            print(f"    num[center,center] = {num[center, center]:.3e}")
+            print(f"    den[center,center] = {den[center, center]:.3e}")
+            print(f"    result = num/den = {num[center, center] / den[center, center]:.3f}")
+            # END DEBUG
+            stacked_patch[valid] = num[valid] / den[valid]
+    
+            stacking_info = {
+                'n_stacked': n_patches,
+                'weighted': True,
+                'velocity_weighting_scheme': velocity_weighting_scheme,
+                'mean_weight': np.mean(w),
+                'std_weight': np.std(w),
+                'mean_variance': np.mean(variances),
+            }
+    
+            if valid_weight_vars is not None:
+                stacking_info['mean_weight_var'] = np.mean(valid_weight_vars)
+    
+        else:
+            # Unweighted mean stack
+            stacked_patch = np.nanmean(patch_stack, axis=0)
+    
+            stacking_info = {
+                'n_stacked': n_patches,
+                'weighted': False,
+                'velocity_weighting_scheme': None,
+            }
+    
         return stacked_patch, stacking_info

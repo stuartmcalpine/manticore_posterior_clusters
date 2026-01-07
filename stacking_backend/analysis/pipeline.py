@@ -57,7 +57,8 @@ class ClusterAnalysisPipeline:
     def run_individual_r500_analysis_with_validation(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                                                patch_size_r500=10.0, npix=256, max_patches=None,
                                                min_coverage=0.9, run_null_tests=True,
-                                               n_bootstrap=500, n_random=500, weights=None,
+                                               n_bootstrap=500, n_random=500, weights=None, weight_vars=None,
+                                               velocity_weighting_scheme='tanimura',
                                                subtract_background=True, bg_inner_radius_deg=5.0,
                                                bg_outer_radius_deg=7.0, analysis_mode='tsz'):
         """
@@ -87,6 +88,14 @@ class ClusterAnalysisPipeline:
             Number of random pointings for null tests
         weights : array-like or None
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
+        weight_vars : array-like or None
+            Optional per-cluster weight variances (e.g. velocity variances from posterior).
+        velocity_weighting_scheme : str
+            Weighting scheme for kSZ stacking. One of:
+            - 'tanimura': w_i = v_i / σ²_T,i (original Tanimura estimator)
+            - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
+            - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
+            - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
         subtract_background : bool
             Whether to subtract background in stacking (default: True)
         bg_inner_radius_deg : float
@@ -115,11 +124,23 @@ class ClusterAnalysisPipeline:
                     f"({len(weights)} vs {len(coord_list)})"
                 )
         
+        if weight_vars is not None:
+            weight_vars = np.asarray(weight_vars)
+            if len(weight_vars) != len(coord_list):
+                raise ValueError(
+                    f"weight_vars must have same length as coord_list "
+                    f"({len(weight_vars)} vs {len(coord_list)})"
+                )
+        
         print("🚀 CLUSTER ANALYSIS PIPELINE")
         print("="*70)
         print(f"⚙️  Analysis mode: {analysis_mode.upper()}")
         print(f"⚙️  Scaling mode: R/R500")
         print(f"⚙️  Patch size: ±{patch_size_r500/2:.1f} × R500")
+        if weights is not None:
+            print(f"⚙️  Velocity weighting scheme: {velocity_weighting_scheme}")
+            if weight_vars is not None:
+                print(f"⚙️  Using velocity variances from posterior")
         if profile_only_mode:
             print(f"⚙️  Profile-only mode: Skipping aperture photometry, bootstrap, and null tests")
         
@@ -133,6 +154,7 @@ class ClusterAnalysisPipeline:
             npix=npix,
             min_coverage=min_coverage,
             weights=weights,
+            weight_vars=weight_vars,
             profile_only_mode=profile_only_mode
         )
         
@@ -148,6 +170,14 @@ class ClusterAnalysisPipeline:
                 raise RuntimeError("Non-finite weights encountered in individual_results")
         else:
             individual_weights = None
+        
+        # Extract weight_vars corresponding to valid clusters, if provided
+        if weight_vars is not None:
+            individual_weight_vars = np.array([result.get('weight_var', np.nan) for result in individual_results])
+            if np.any(~np.isfinite(individual_weight_vars)):
+                raise RuntimeError("Non-finite weight_vars encountered in individual_results")
+        else:
+            individual_weight_vars = None
         
         # For kSZ mode, skip steps 2-4 (bootstrap, null tests, significance)
         bootstrap_results = None
@@ -216,6 +246,8 @@ class ClusterAnalysisPipeline:
             min_coverage=min_coverage,
             max_patches=max_patches,
             weights=individual_weights,
+            weight_vars=individual_weight_vars,
+            velocity_weighting_scheme=velocity_weighting_scheme,
             subtract_background=subtract_background,
             bg_inner_radius_deg=bg_inner_radius_deg,
             bg_outer_radius_deg=bg_outer_radius_deg
@@ -226,7 +258,8 @@ class ClusterAnalysisPipeline:
         # Compile results
         results = self._compile_results(
             individual_results, individual_delta_y, individual_errors,
-            individual_weights, measurement_values, measurement_errors, measurement_label,
+            individual_weights, individual_weight_vars, velocity_weighting_scheme,
+            measurement_values, measurement_errors, measurement_label,
             bootstrap_results, significance_results, stacked_patch, stacking_info,
             rejection_stats, quality_stats, coord_list, patch_size_r500, npix,
             inner_r500_factor, outer_r500_factor, null_results,
@@ -236,7 +269,7 @@ class ClusterAnalysisPipeline:
         self._print_summary(results, profile_only_mode)
         
         return results
-    
+
     def _robust_bootstrap_analysis(self, individual_results, values, errors, n_bootstrap):
         """Robust bootstrap that properly combines sample and measurement variance"""
         
@@ -344,7 +377,8 @@ class ClusterAnalysisPipeline:
         }
     
     def _compile_results(self, individual_results, individual_delta_y, individual_errors,
-                        individual_weights, measurement_values, measurement_errors, measurement_label,
+                        individual_weights, individual_weight_vars, velocity_weighting_scheme,
+                        measurement_values, measurement_errors, measurement_label,
                         bootstrap_results, significance_results, stacked_patch, stacking_info,
                         rejection_stats, quality_stats, coord_list, patch_size_r500, npix,
                         inner_r500_factor, outer_r500_factor, null_results,
@@ -391,6 +425,7 @@ class ClusterAnalysisPipeline:
             'outer_r500_factor': outer_r500_factor,
             
             'weighted_mode': weighted_mode,
+            'velocity_weighting_scheme': velocity_weighting_scheme if weighted_mode else None,
         }
         
         # Add tSZ-specific results if in tSZ mode
@@ -427,6 +462,7 @@ class ClusterAnalysisPipeline:
                 
                 # Weighted estimator bookkeeping
                 'weights': individual_weights.tolist() if individual_weights is not None else None,
+                'weight_vars': individual_weight_vars.tolist() if individual_weight_vars is not None else None,
                 'estimator_values': measurement_values.tolist(),
                 'estimator_errors': measurement_errors.tolist(),
                 'estimator_label': measurement_label,
@@ -446,11 +482,12 @@ class ClusterAnalysisPipeline:
             results.update({
                 'individual_results': individual_results,
                 'weights': individual_weights.tolist() if individual_weights is not None else None,
+                'weight_vars': individual_weight_vars.tolist() if individual_weight_vars is not None else None,
                 'quality_stats': None,
             })
         
         return results
-    
+
     def _print_summary(self, results, profile_only_mode):
         """Print analysis summary"""
         print(f"\n🎯 ANALYSIS RESULTS:")
@@ -504,7 +541,7 @@ class ClusterAnalysisPipeline:
         print(f"   Analysis mode: {results['analysis_mode'].upper()}")
         print(f"   Scaling mode: R/R500")
         print(f"   Patch size: ±{results['patch_size_r500']/2:.1f} × R500")
-        print(f"   Stacking coordinate system: {results['stacking_info']['coord_system']}")
+        print(f"   Stacking coordinate system: {results['stacking_info'].get('coord_system', 'r500')}")
         if results['weighted_mode']:
             print(f"   Weighted mode: True (using weights in stacking)")
         else:

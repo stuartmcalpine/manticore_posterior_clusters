@@ -6,10 +6,10 @@ class IndividualClusterAnalyzer:
     
     def __init__(self, patch_extractor):
         self.patch_extractor = patch_extractor
-    
+   
     def calculate_measurements(self, coord_list, inner_r500_factor=1.0, outer_r500_factor=3.0,
                              patch_size_r500=10.0, npix=256, min_coverage=0.9,
-                             weights=None, profile_only_mode=False):
+                             weights=None, weight_vars=None, profile_only_mode=False):
         """
         Calculate individual cluster measurements with error estimation.
         
@@ -29,6 +29,10 @@ class IndividualClusterAnalyzer:
             Optional per-cluster weights (e.g. LOS velocities). When provided,
             the weight for each successfully measured cluster is stored in the
             result dict as 'weight'.
+        weight_vars : array-like or None
+            Optional per-cluster weight variances (e.g. velocity variances from posterior).
+            When provided, the variance for each successfully measured cluster is stored
+            in the result dict as 'weight_var'.
         profile_only_mode : bool
             If True, skip aperture photometry calculations (for kSZ analysis)
         """
@@ -42,6 +46,14 @@ class IndividualClusterAnalyzer:
                 raise ValueError(
                     f"weights must have same length as coord_list "
                     f"({len(weights)} vs {len(coord_list)})"
+                )
+        
+        if weight_vars is not None:
+            weight_vars = np.asarray(weight_vars)
+            if len(weight_vars) != len(coord_list):
+                raise ValueError(
+                    f"weight_vars must have same length as coord_list "
+                    f"({len(weight_vars)} vs {len(coord_list)})"
                 )
         
         individual_results = []
@@ -88,6 +100,10 @@ class IndividualClusterAnalyzer:
                 # Attach weight if provided
                 if weights is not None:
                     result['weight'] = float(weights[i])
+                
+                # Attach weight variance if provided
+                if weight_vars is not None:
+                    result['weight_var'] = float(weight_vars[i])
                 
                 if profile_only_mode:
                     # Skip aperture photometry - just store basic info
