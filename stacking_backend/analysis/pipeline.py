@@ -59,8 +59,8 @@ class ClusterAnalysisPipeline:
                                                min_coverage=0.9, run_null_tests=True,
                                                n_bootstrap=500, n_random=500, weights=None, weight_vars=None,
                                                velocity_weighting_scheme='tanimura',
-                                               subtract_background=True, bg_inner_radius_deg=5.0,
-                                               bg_outer_radius_deg=7.0, analysis_mode='tsz'):
+                                               subtract_background=False, bg_inner_r500=3.0,
+                                               bg_outer_r500=5.0, analysis_mode='tsz'):
         """
         Full analysis pipeline with r/r500 scaling.
         
@@ -96,15 +96,37 @@ class ClusterAnalysisPipeline:
             - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
             - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
             - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
-        subtract_background : bool
-            Whether to subtract background in stacking (default: True)
-        bg_inner_radius_deg : float
-            Inner radius for background annulus in degrees (default: 5.0)  
-        bg_outer_radius_deg : float
-            Outer radius for background annulus in degrees (default: 7.0)
-        analysis_mode : str
-            'tsz': Full tSZ analysis with aperture photometry, bootstrap, significance (default)
+        subtract_background : bool, default=False
+            Whether to subtract background in stacking. Default is False because
+            aperture photometry already performs background subtraction at physical
+            scales (1.5-2.5 × R500), which is the standard approach in tSZ literature.
+            Set to True only if you need to remove large-scale map systematics.
+
+            IMPORTANT: When True, background is subtracted at physical scales
+            (bg_inner_r500 to bg_outer_r500) to ensure consistent zero-points
+            after r/r500 rescaling.
+        bg_inner_r500 : float, default=3.0
+            Inner radius for background annulus in units of R500. Only used when
+            subtract_background=True. Default 3.0 × R500 is outside typical cluster
+            signal extent (~2 × R500).
+        bg_outer_r500 : float, default=5.0
+            Outer radius for background annulus in units of R500. Only used when
+            subtract_background=True. Provides robust background in noise-dominated
+            regime.
+        analysis_mode : str, default='tsz'
+            'tsz': Full tSZ analysis with aperture photometry, bootstrap, significance
             'ksz': Streamlined kSZ analysis - skip aperture photometry
+
+        Notes
+        -----
+        Background Subtraction Strategy:
+        The pipeline performs background subtraction at two stages:
+        1. Aperture photometry (always): Measures signal relative to 1.5-2.5 × R500
+           annulus for each cluster. This is standard practice in tSZ studies.
+        2. Stacking (optional): Additional large-scale mode removal if
+           subtract_background=True. Use only when maps have significant gradients.
+
+        For standard tSZ analysis, use subtract_background=False (default).
         """
 
         # Input validation
@@ -249,8 +271,8 @@ class ClusterAnalysisPipeline:
             weight_vars=individual_weight_vars,
             velocity_weighting_scheme=velocity_weighting_scheme,
             subtract_background=subtract_background,
-            bg_inner_radius_deg=bg_inner_radius_deg,
-            bg_outer_radius_deg=bg_outer_radius_deg
+            bg_inner_r500=bg_inner_r500,
+            bg_outer_r500=bg_outer_r500
         )
         if stacked_patch is None:
             raise ValueError('No valid patches for stacking')

@@ -11,11 +11,11 @@ class PatchStacker:
     def stack_patches(self, coord_list, patch_size_r500=10.0, npix=256,
                  min_coverage=0.9, max_patches=None, weights=None, weight_vars=None,
                  velocity_weighting_scheme='tanimura',
-                 subtract_background=True, bg_inner_radius_deg=5.0, 
-                 bg_outer_radius_deg=7.0):
+                 subtract_background=False, bg_inner_r500=3.0,
+                 bg_outer_r500=5.0):
         """
         Stack multiple patches with r/r500 rescaling
-        
+
         Parameters
         ----------
         coord_list : list
@@ -38,12 +38,33 @@ class PatchStacker:
             - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
             - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
             - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
-        subtract_background : bool
-            Whether to subtract background from outer annulus
-        bg_inner_radius_deg : float
-            Inner radius for background annulus in degrees
-        bg_outer_radius_deg : float
-            Outer radius for background annulus in degrees
+        subtract_background : bool, default=False
+            Whether to subtract background from outer annulus. Default is False
+            because aperture photometry already performs background subtraction at
+            physical scales (1.5-2.5 × R500). Set to True only if you need to remove
+            large-scale map systematics or gradients.
+
+            IMPORTANT: When True, background is subtracted at physical scales
+            (bg_inner_r500 to bg_outer_r500) to ensure consistent zero-points
+            after r/r500 rescaling.
+        bg_inner_r500 : float, default=3.0
+            Inner radius for background annulus in units of R500. Only used when
+            subtract_background=True. Default 3.0 × R500 is chosen to be outside
+            typical cluster signal extent (~2 × R500).
+        bg_outer_r500 : float, default=5.0
+            Outer radius for background annulus in units of R500. Only used when
+            subtract_background=True. Default 5.0 × R500 provides sufficient area
+            for robust background estimation in noise-dominated regime.
+
+        Notes
+        -----
+        Background Subtraction Strategy:
+        - Default (subtract_background=False): Relies on aperture photometry
+          background subtraction at 1.5-2.5 × R500, which is the standard approach
+          in the literature for tSZ cluster studies.
+        - When subtract_background=True: Removes large-scale modes from each patch
+          at consistent physical scales before stacking. Use this when working with
+          maps containing significant DC offsets or gradients.
         """
 
         print(f"🔄 Stacking {len(coord_list)} patches in R/R500 mode...")
@@ -89,9 +110,11 @@ class PatchStacker:
                 
                 # Calculate patch size in degrees for this cluster
                 patch_size_deg = patch_size_r500 * r500_deg
-               
+
                 if subtract_background:
-                    patch_size_deg = max(patch_size_deg, 2*bg_outer_radius_deg)
+                    # Ensure patch is large enough to include background annulus
+                    bg_outer_radius_deg = bg_outer_r500 * r500_deg
+                    patch_size_deg = max(patch_size_deg, 2 * bg_outer_radius_deg)
 
                 # Extract patch in native angular coordinates
                 patch_data, mask_patch = self.patch_extractor.extract_patch(
@@ -121,7 +144,7 @@ class PatchStacker:
                 if subtract_background:
                     patch_data = self._subtract_background(
                         patch_data, patch_size_deg, npix, i,
-                        bg_inner_radius_deg, bg_outer_radius_deg
+                        r500_deg, bg_inner_r500, bg_outer_r500
                     )
                 
                 # Rescale patch to r/r500 units
@@ -269,10 +292,10 @@ class PatchStacker:
     
     
     def _subtract_background(self, patch_data, patch_size_deg, npix, patch_index,
-                            bg_inner_radius_deg=5.0, bg_outer_radius_deg=7.0):
+                            r500_deg, bg_inner_r500, bg_outer_r500):
         """
-        Subtract background from patch using outer annulus
-        
+        Subtract background from patch using outer annulus at physical scales
+
         Parameters
         ----------
         patch_data : array
@@ -283,22 +306,28 @@ class PatchStacker:
             Number of pixels per side
         patch_index : int
             Index of the current patch (for warnings)
-        bg_inner_radius_deg : float
-            Inner radius of background annulus in degrees
-        bg_outer_radius_deg : float
-            Outer radius of background annulus in degrees
+        r500_deg : float
+            R500 of this cluster in degrees
+        bg_inner_r500 : float
+            Inner radius of background annulus in units of R500
+        bg_outer_r500 : float
+            Outer radius of background annulus in units of R500
         """
+        # Convert r500 factors to degrees for this specific cluster
+        bg_inner_radius_deg = bg_inner_r500 * r500_deg
+        bg_outer_radius_deg = bg_outer_r500 * r500_deg
+
         npix_half = npix // 2
         y, x = np.ogrid[:npix, :npix]
         radius = np.sqrt((x - npix_half)**2 + (y - npix_half)**2) * (patch_size_deg / npix)
-        
+
         bg_mask = (radius > bg_inner_radius_deg) & (radius < bg_outer_radius_deg) & np.isfinite(patch_data)
         if np.sum(bg_mask) > 100:  # Ensure enough pixels
             bg_level = np.median(patch_data[bg_mask])
             patch_data -= bg_level
         else:
             print(f"   Warning: not enough background pixels for patch {patch_index}")
-        
+
         return patch_data
 
     def _compute_stack(self, valid_patches, valid_coords, patch_size_r500, npix,
