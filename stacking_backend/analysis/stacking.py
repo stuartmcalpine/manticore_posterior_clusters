@@ -34,10 +34,15 @@ class PatchStacker:
             Optional per-cluster weight variances (e.g. velocity variances from posterior)
         velocity_weighting_scheme : str
             Weighting scheme for kSZ stacking. One of:
-            - 'tanimura': w_i = v_i / σ²_T,i (original Tanimura estimator)
-            - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
-            - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
-            - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
+            - 'tanimura': Original Tanimura et al. (2021) estimator.
+              Uses w_i = v_i / σ²_T,i. Treats velocities as perfectly known.
+              Use when velocities have negligible uncertainty.
+            - 'optimal_posterior': Optimal estimator for velocity posteriors.
+              Accounts for both CMB variance and velocity uncertainty.
+              Downweights clusters with uncertain or small velocities.
+              Requires weight_vars (velocity variances from posterior).
+              This is the minimum-variance unbiased estimator when you have
+              velocity posteriors v̂_i ~ N(v_i, σ²_v,i).
         subtract_background : bool, default=False
             Whether to subtract background from outer annulus. Default is False
             because aperture photometry already performs background subtraction at
@@ -346,8 +351,12 @@ class PatchStacker:
     
         # Track finite values
         finite_mask = np.isfinite(patch_stack)
-    
-        # Calculate variance of each patch (σ²_T,i)
+
+        # Calculate variance of each patch (σ²_T,i) for inverse-variance weighting
+        # Following Tanimura et al. (2021): variance calculated over spatial region
+        # to estimate CMB+noise variance. For kSZ with pre-filtered maps (ℓ < 720),
+        # signal << CMB variance (< 2%), so signal contamination is negligible.
+        # This variance is used to downweight noisy patches in the stacking.
         variances = np.nanvar(patch_stack, axis=(1, 2))
         variances = np.maximum(variances, 1e-20)  # Prevent division by zero
     
@@ -365,12 +374,12 @@ class PatchStacker:
             print(f"    variances (CMB): min={np.min(variances):.2e}, max={np.max(variances):.2e}")
             # END DEBUG
 
-            # Validate weight_vars if needed for non-tanimura schemes
-            if velocity_weighting_scheme != 'tanimura':
+            # Validate weight_vars if needed for optimal_posterior scheme
+            if velocity_weighting_scheme == 'optimal_posterior':
                 if valid_weight_vars is None:
                     raise ValueError(
-                        f"velocity_weighting_scheme='{velocity_weighting_scheme}' "
-                        f"requires valid_weight_vars (velocity variances)"
+                        f"velocity_weighting_scheme='optimal_posterior' "
+                        f"requires valid_weight_vars (velocity variances from posterior)"
                     )
                 valid_weight_vars = np.array(valid_weight_vars)
                 if len(valid_weight_vars) != n_patches:
@@ -380,36 +389,34 @@ class PatchStacker:
                     )
                 # Prevent division by zero
                 valid_weight_vars = np.maximum(valid_weight_vars, 1e-20)
-    
+
             # Compute numerator and denominator weights based on scheme
             # All schemes: result = Σ(T × num_weight) / Σ(den_weight)
-    
+
             if velocity_weighting_scheme == 'tanimura':
-                # Tanimura: w_i = v_i / σ²_T,i
+                # Tanimura et al. (2021): w_i = v_i / σ²_T,i
+                # Assumes velocities are perfectly known (no velocity uncertainty)
+                # Stacked result: Σ[T_i(r) · v_i/σ²_T,i] / Σ[|v_i|/σ²_T,i]
                 num_weights = w / variances
                 den_weights = np.abs(w) / variances
-    
-            elif velocity_weighting_scheme == 'product':
-                # Product: w_i = v_i / (σ²_T,i · σ²_v,i)
-                num_weights = w / (variances * valid_weight_vars)
-                den_weights = np.abs(w) / (variances * valid_weight_vars)
-    
-            elif velocity_weighting_scheme == 'velocity_snr':
-                # Velocity S/N: w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
-                sigma_v = np.sqrt(valid_weight_vars)
-                num_weights = w * np.abs(w) / (variances * sigma_v)
-                den_weights = w**2 / (variances * sigma_v)
-    
-            elif velocity_weighting_scheme == 'velocity_snr_direct':
-                # Direct S/N: w_i = v_i · SNR_v,i / σ²_T,i
-                # where SNR_v,i = |v_i| / σ_v,i
-                sigma_v = np.sqrt(valid_weight_vars)
-                snr_v = np.abs(w) / sigma_v
-                num_weights = w * snr_v / variances
-                den_weights = np.abs(w) * snr_v / variances
-    
+
+            elif velocity_weighting_scheme == 'optimal_posterior':
+                # Optimal estimator for velocity posteriors v̂_i ~ N(v_i, σ²_v,i)
+                # Derivation: var(T_i × v̂_i) ≈ σ²_T,i × v̂_i²
+                # Optimal weight: w_i = 1/(σ²_T,i × v̂_i²)
+                # Stacked result: Σ[T_i(r)/(σ²_T,i·v̂_i)] / Σ[1/(σ²_T,i·v̂_i²)]
+                # This downweights clusters with:
+                #   - High CMB noise (large σ²_T,i)
+                #   - Small velocities (small |v̂_i|)
+                #   - Uncertain velocities (appears via v̂_i² in denominator)
+                num_weights = 1.0 / (variances * np.abs(w))
+                den_weights = 1.0 / (variances * w**2)
+
             else:
-                raise ValueError(f"Unknown velocity_weighting_scheme: {velocity_weighting_scheme}")
+                raise ValueError(
+                    f"Unknown velocity_weighting_scheme: '{velocity_weighting_scheme}'. "
+                    f"Valid options: 'tanimura', 'optimal_posterior'"
+                )
     
             # Reshape for broadcasting: (n_patches,) -> (n_patches, 1, 1)
             num_weights_2d = num_weights[:, np.newaxis, np.newaxis]

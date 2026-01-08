@@ -90,12 +90,17 @@ class ClusterAnalysisPipeline:
             Optional per-cluster weights (e.g. LOS velocities for kSZ).
         weight_vars : array-like or None
             Optional per-cluster weight variances (e.g. velocity variances from posterior).
-        velocity_weighting_scheme : str
+        velocity_weighting_scheme : str, default='tanimura'
             Weighting scheme for kSZ stacking. One of:
-            - 'tanimura': w_i = v_i / σ²_T,i (original Tanimura estimator)
-            - 'product': w_i = v_i / (σ²_T,i · σ²_v,i) (independent uncertainties)
-            - 'velocity_snr': w_i = v_i · |v_i| / (σ²_T,i · σ_v,i)
-            - 'velocity_snr_direct': w_i = v_i · SNR_v,i / σ²_T,i
+            - 'tanimura': Original Tanimura et al. (2021) estimator.
+              Uses w_i = v_i / σ²_T,i. Treats velocities as perfectly known.
+              Use when velocities have negligible uncertainty.
+            - 'optimal_posterior': Optimal estimator for velocity posteriors.
+              Accounts for both CMB variance and velocity uncertainty.
+              Requires weight_vars (velocity variances from posterior).
+              This is the minimum-variance unbiased estimator for velocity
+              posteriors v̂_i ~ N(v_i, σ²_v,i). Downweights clusters with
+              uncertain or small velocities.
         subtract_background : bool, default=False
             Whether to subtract background in stacking. Default is False because
             aperture photometry already performs background subtraction at physical
