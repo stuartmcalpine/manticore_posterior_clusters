@@ -8,10 +8,18 @@ class NullTestValidator:
         self.patch_extractor = patch_extractor
     
     def run_null_tests(self, n_random_pointings, coord_list, inner_r500_factor, outer_r500_factor,
-                      patch_size_r500, npix, min_coverage, weights=None):
+                      patch_size_r500, npix, min_coverage):
         """
-        Run null tests with mask-bias correction.
-        
+        Run null tests with mask-bias correction for unweighted tSZ analysis.
+
+        This validates that there is no spurious signal at random sky positions.
+        Tests the null hypothesis: "Is there tSZ signal in the map at random
+        positions unrelated to clusters?"
+
+        Note: For kSZ analysis with velocity weighting, null tests should be
+        performed in analysis notebooks by shuffling cluster-velocity pairings,
+        not by this backend function.
+
         Parameters
         ----------
         n_random_pointings : int
@@ -26,18 +34,10 @@ class NullTestValidator:
             Patch resolution
         min_coverage : float
             Minimum coverage for aperture measurement
-        weights : array-like or None
-            Optional weights (e.g. cluster velocities). If provided, the null
-            measurements are constructed using a weighted estimator, drawing
-            random weights from the same pool to emulate the weighted signal
-            estimator used in the main analysis.
         """
         
         print(f"🎲 Running mask-bias-corrected null tests with {n_random_pointings} random pointings...")
-        
-        if weights is not None:
-            weights = np.asarray(weights)
-        
+
         # First, analyze mask coverage distribution of actual cluster sample
         cluster_coverage_stats = self._analyze_cluster_mask_coverage(
             coord_list, patch_size_r500, npix, inner_r500_factor, outer_r500_factor
@@ -47,11 +47,8 @@ class NullTestValidator:
         random_coords = self._generate_mask_matched_random_pointings(
             n_random_pointings, coord_list, patch_size_r500, cluster_coverage_stats
         )
-        
-        # Prepare weight pool for random pointings if we are doing weighted nulls
-        weight_pool = weights if weights is not None and len(weights) > 0 else None
-        
-        # Calculate measurements for random pointings
+
+        # Calculate measurements for random pointings (unweighted tSZ)
         random_measurements = []
         random_errors = []
         rejection_count = 0
@@ -99,17 +96,11 @@ class NullTestValidator:
                 if result is not None:
                     delta_y = result['delta_y']
                     err = result.get('delta_y_error', None)
-                    
-                    if weight_pool is not None:
-                        # Draw a random weight from the same distribution as the signal
-                        w = np.random.choice(weight_pool)
-                        random_measurements.append(w * delta_y)
-                        if err is not None:
-                            random_errors.append(abs(w) * err)
-                    else:
-                        random_measurements.append(delta_y)
-                        if err is not None:
-                            random_errors.append(err)
+
+                    # Unweighted null test for tSZ
+                    random_measurements.append(delta_y)
+                    if err is not None:
+                        random_errors.append(err)
                 else:
                     reason = diagnostics.get('rejection_reason', 'unknown')
                     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1

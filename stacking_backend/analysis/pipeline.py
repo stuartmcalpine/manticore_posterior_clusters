@@ -137,9 +137,17 @@ class ClusterAnalysisPipeline:
         # Input validation
         InputValidator.validate_coord_list(coord_list)
         InputValidator.validate_analysis_params(patch_size_r500, npix, inner_r500_factor, outer_r500_factor, min_coverage)
-        
+
         if analysis_mode not in ['tsz', 'ksz']:
             raise ValueError(f"analysis_mode must be 'tsz' or 'ksz', got '{analysis_mode}'")
+
+        # Validate that weights are only used with kSZ mode
+        if weights is not None and analysis_mode == 'tsz':
+            raise ValueError(
+                "Velocity weighting (weights parameter) is only supported for kSZ analysis. "
+                "For tSZ analysis, use analysis_mode='tsz' without weights. "
+                "For velocity-weighted kSZ analysis, use analysis_mode='ksz' with weights."
+            )
         
         profile_only_mode = (analysis_mode == 'ksz')
         
@@ -250,8 +258,7 @@ class ClusterAnalysisPipeline:
                     outer_r500_factor=outer_r500_factor,
                     patch_size_r500=patch_size_r500,
                     npix=npix,
-                    min_coverage=min_coverage,
-                    weights=individual_weights
+                    min_coverage=min_coverage
                 )
             
             # Step 4: Calculate corrected significance
