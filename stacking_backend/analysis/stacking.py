@@ -361,19 +361,8 @@ class PatchStacker:
         variances = np.maximum(variances, 1e-20)  # Prevent division by zero
     
         w = valid_weights  # velocities
-    
-        if w is not None:
-            # DEBUG - add this block temporarily
-            print(f"\n  DEBUG _compute_stack:")
-            print(f"    n_patches: {n_patches}")
-            print(f"    velocity_weighting_scheme: {velocity_weighting_scheme}")
-            print(f"    w (velocities): min={np.min(w):.1f}, max={np.max(w):.1f}, mean={np.mean(w):.1f}")
-            print(f"    Fraction w < 0: {np.mean(w < 0):.1%}")
-            if valid_weight_vars is not None:
-                print(f"    valid_weight_vars: min={np.min(valid_weight_vars):.1f}, max={np.max(valid_weight_vars):.1f}")
-            print(f"    variances (CMB): min={np.min(variances):.2e}, max={np.max(variances):.2e}")
-            # END DEBUG
 
+        if w is not None:
             # Validate weight_vars if needed for optimal_posterior scheme
             if velocity_weighting_scheme == 'optimal_posterior':
                 if valid_weight_vars is None:
@@ -409,8 +398,9 @@ class PatchStacker:
                 #   - High CMB noise (large σ²_T,i)
                 #   - Small velocities (small |v̂_i|)
                 #   - Uncertain velocities (appears via v̂_i² in denominator)
-                num_weights = 1.0 / (variances * np.abs(w))
-                den_weights = 1.0 / (variances * w**2)
+                # IMPORTANT: Numerator preserves sign of v̂_i to properly cancel velocities
+                num_weights = 1.0 / (variances * w)  # Uses v̂_i with sign
+                den_weights = 1.0 / (variances * w**2)  # Uses v̂_i² (always positive)
 
             else:
                 raise ValueError(
@@ -432,24 +422,6 @@ class PatchStacker:
             # Compute result where denominator is non-zero
             stacked_patch = np.full((npix, npix), np.nan)
             valid = den > 0
-            # Add this debug output INSIDE _compute_stack, after computing num and den
-            # Right before: stacked_patch[valid] = num[valid] / den[valid]
-            
-            # DEBUG - trace computation
-            print(f"\n  DEBUG computation:")
-            print(f"    num_weights: min={np.min(num_weights):.2e}, max={np.max(num_weights):.2e}, mean={np.mean(num_weights):.2e}")
-            print(f"    den_weights: min={np.min(den_weights):.2e}, max={np.max(den_weights):.2e}, mean={np.mean(den_weights):.2e}")
-            print(f"    All num_weights < 0? {np.all(num_weights < 0)}")
-            print(f"    All den_weights > 0? {np.all(den_weights > 0)}")
-            
-            # Check central pixel
-            center = npix // 2
-            print(f"\n  Central pixel [{center},{center}]:")
-            print(f"    patch values at center: min={np.min(patch_stack[:, center, center]):.3f}, max={np.max(patch_stack[:, center, center]):.3f}, mean={np.mean(patch_stack[:, center, center]):.3f}")
-            print(f"    num[center,center] = {num[center, center]:.3e}")
-            print(f"    den[center,center] = {den[center, center]:.3e}")
-            print(f"    result = num/den = {num[center, center] / den[center, center]:.3f}")
-            # END DEBUG
             stacked_patch[valid] = num[valid] / den[valid]
     
             stacking_info = {
