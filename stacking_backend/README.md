@@ -14,7 +14,7 @@ The code implements r/r500 scaling to stack clusters of different sizes at consi
 
 - 🔭 **Dual Analysis Modes**: Full tSZ photometry or streamlined kSZ velocity-weighted stacking
 - 📐 **Physical Scaling**: r/r500 rescaling ensures consistent physical scales across clusters
-- 📊 **Optimal Estimators**: Two velocity-weighting schemes including a custom minimum-variance estimator for velocity posteriors
+- 📊 **Optimal Estimators**: Three velocity-weighting schemes including a custom minimum-variance estimator for velocity posteriors
 - ✅ **Robust Statistics**: Bootstrap error estimation with proper variance decomposition
 - 🎯 **Validation Framework**: Null tests with mask-bias correction for tSZ
 - 🔧 **Flexible Configuration**: Extensive parameter control for different science cases
@@ -164,9 +164,31 @@ radii, profile, errors, counts = RadialProfileCalculator.calculate_profile_from_
 
 ## Velocity Weighting Estimators
 
-Two estimators are available for kSZ analysis via the `velocity_weighting_scheme` parameter:
+Three estimators are available for kSZ analysis via the `velocity_weighting_scheme` parameter:
 
-### 1. `'tanimura'` (Baseline)
+### 1. `'simple'` (Baseline)
+
+**Simple velocity-weighted mean without inverse-variance weighting**
+
+```
+Stacked(r) = Σᵢ [Tᵢ(r) · vᵢ] / Σᵢ [|vᵢ|]
+```
+
+**Properties:**
+- Equal weighting for all clusters regardless of CMB noise level
+- No inverse-variance weighting by patch variance
+- Simplest estimator for velocity-weighted stacking
+
+**When to use:**
+- As a baseline for comparison with other estimators
+- When CMB variance is approximately uniform across all patches
+- When you want to avoid any assumptions about noise properties
+
+**Requirements:**
+- `weights`: Velocity values
+- `weight_vars`: Not required
+
+### 2. `'tanimura'`
 
 **Original Tanimura et al. (2021) estimator**
 
@@ -188,7 +210,7 @@ Stacked(r) = Σᵢ [Tᵢ(r) · vᵢ / σ²ᵀ,ᵢ] / Σᵢ [|vᵢ| / σ²ᵀ,ᵢ
 - `weights`: Velocity values
 - `weight_vars`: Not required
 
-### 2. `'optimal_posterior'` (Custom - Recommended)
+### 3. `'optimal_posterior'` (Recommended)
 
 **Minimum-variance unbiased estimator for velocity posteriors**
 
@@ -285,17 +307,17 @@ This estimator automatically:
 - ✅ **Downweights uncertain velocities**: Velocity uncertainty manifests through v̂ᵢ² in the denominator
 - ✅ **Minimum variance**: This is the optimal unbiased estimator for the given problem
 
-### Comparison with Tanimura
+### Comparison of Estimators
 
-| Feature | Tanimura | Optimal Posterior |
-|---------|----------|-------------------|
-| **Accounts for CMB variance** | ✅ Yes | ✅ Yes |
-| **Accounts for velocity variance** | ❌ No | ✅ Yes |
-| **Downweights small velocities** | ✅ Linear (1/v) | ✅ Stronger (1/v²) |
-| **Use case** | Point-estimate velocities | Velocity posteriors |
-| **Expected S/N** | Good | **Better** |
+| Feature | Simple | Tanimura | Optimal Posterior |
+|---------|--------|----------|-------------------|
+| **Accounts for CMB variance** | ❌ No | ✅ Yes | ✅ Yes |
+| **Accounts for velocity variance** | ❌ No | ❌ No | ✅ Yes |
+| **Downweights small velocities** | ✅ Linear (1/v) | ✅ Linear (1/v) | ✅ Stronger (1/v²) |
+| **Use case** | Baseline / uniform noise | Point-estimate velocities | Velocity posteriors |
+| **Expected S/N** | Baseline | Good | **Better** |
 
-**Empirical test:** The optimal_posterior estimator should yield a stronger kSZ detection (higher signal in stacked patch) because it's the minimum-variance estimator.
+**Empirical test:** The optimal_posterior estimator should yield a stronger kSZ detection (higher signal in stacked patch) because it's the minimum-variance estimator. The simple estimator serves as a useful baseline for comparison.
 
 ---
 
@@ -372,7 +394,7 @@ kSZ relies on velocity weighting to cancel CMB and other isotropic backgrounds.
 |-----------|------|---------|-------------|
 | `weights` | array | `None` | Velocity values (km/s) |
 | `weight_vars` | array | `None` | Velocity variances (required for optimal_posterior) |
-| `velocity_weighting_scheme` | str | `'tanimura'` | Estimator: `'tanimura'` or `'optimal_posterior'` |
+| `velocity_weighting_scheme` | str | `'tanimura'` | Estimator: `'simple'`, `'tanimura'`, or `'optimal_posterior'` |
 
 ### Background Subtraction Parameters
 
@@ -601,13 +623,13 @@ plt.show()
 ### Example 4: Comparison of Velocity Estimators
 
 ```python
-# Compare Tanimura vs optimal_posterior
+# Compare all three velocity weighting schemes
 
-schemes = ['tanimura', 'optimal_posterior']
+schemes = ['simple', 'tanimura', 'optimal_posterior']
 results_comparison = {}
 
 for scheme in schemes:
-    # For Tanimura, weight_vars not needed
+    # For simple and Tanimura, weight_vars not needed
     kwargs = {'weights': velocity_means}
     if scheme == 'optimal_posterior':
         kwargs['weight_vars'] = velocity_vars
@@ -629,7 +651,8 @@ for scheme in schemes:
     print(f"  Central amplitude: {central_amplitude:.2e} μK")
     print(f"  Stacked {results['n_measurements']} clusters")
 
-# Optimal posterior should show stronger signal
+# Optimal posterior should show strongest signal
+# Tanimura should improve over simple by accounting for CMB variance
 ```
 
 ### Example 5: kSZ Null Tests via Velocity Shuffling
@@ -799,6 +822,9 @@ For questions, bug reports, or feature requests:
 ---
 
 ## Changelog
+
+### Version 2.1 (2025)
+- ✅ Added `simple` velocity weighting estimator (velocity-weighted mean without inverse-variance weighting)
 
 ### Version 2.0 (2025)
 - ✅ Changed `subtract_background` default to `False`

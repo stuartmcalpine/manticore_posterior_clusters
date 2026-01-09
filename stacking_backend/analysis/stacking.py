@@ -34,6 +34,9 @@ class PatchStacker:
             Optional per-cluster weight variances (e.g. velocity variances from posterior)
         velocity_weighting_scheme : str
             Weighting scheme for kSZ stacking. One of:
+            - 'simple': Simple velocity-weighted mean without variance weighting.
+              Uses w_i = v_i. Equal weighting for all clusters regardless of noise.
+              Use as a baseline or when CMB variance is uniform across patches.
             - 'tanimura': Original Tanimura et al. (2021) estimator.
               Uses w_i = v_i / σ²_T,i. Treats velocities as perfectly known.
               Use when velocities have negligible uncertainty.
@@ -382,7 +385,15 @@ class PatchStacker:
             # Compute numerator and denominator weights based on scheme
             # All schemes: result = Σ(T × num_weight) / Σ(den_weight)
 
-            if velocity_weighting_scheme == 'tanimura':
+            if velocity_weighting_scheme == 'simple':
+                # Simple velocity-weighted mean without inverse-variance weighting
+                # Stacked result: Σ[T_i(r) · v_i] / Σ[|v_i|]
+                # Equal weighting for all clusters regardless of CMB noise level.
+                # Use as a baseline or when CMB variance is uniform across patches.
+                num_weights = w
+                den_weights = np.abs(w)
+
+            elif velocity_weighting_scheme == 'tanimura':
                 # Tanimura et al. (2021): w_i = v_i / σ²_T,i
                 # Assumes velocities are perfectly known (no velocity uncertainty)
                 # Stacked result: Σ[T_i(r) · v_i/σ²_T,i] / Σ[|v_i|/σ²_T,i]
@@ -405,7 +416,7 @@ class PatchStacker:
             else:
                 raise ValueError(
                     f"Unknown velocity_weighting_scheme: '{velocity_weighting_scheme}'. "
-                    f"Valid options: 'tanimura', 'optimal_posterior'"
+                    f"Valid options: 'simple', 'tanimura', 'optimal_posterior'"
                 )
     
             # Reshape for broadcasting: (n_patches,) -> (n_patches, 1, 1)
