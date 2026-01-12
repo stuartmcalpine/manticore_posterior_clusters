@@ -4,16 +4,24 @@ from pymanticore.swift_analysis import SOAPData
 from collections import defaultdict
 
 class MergerTreeTracer:
-    def __init__(self, basedir, observer_coords=[500,500,500]):
+    def __init__(self, basedir, observer_coords=[500,500,500], hdf5_subdir="soap/SOAP_uncompressed/HBTplus",
+                 hdf5_filename_pattern="halo_properties_{snap_num:04d}.hdf5", final_snapshot=77,
+                 final_mass_cut=1e15, final_radius_cut=300):
         self.basedir = basedir
         self.observer_coords = observer_coords
-    
+        self.hdf5_subdir = hdf5_subdir
+        self.hdf5_filename_pattern = hdf5_filename_pattern
+        self.final_snapshot = final_snapshot
+        self.final_mass_cut = final_mass_cut
+        self.final_radius_cut = final_radius_cut
+
     def _load_snapshot(self, mcmc_id, snap_num):
         """Load a single snapshot with validation data"""
-        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_{snap_num:04d}.hdf5")
-        
-        if snap_num == 77:
-            soap_data = SOAPData(filename, mass_cut=1e15, radius_cut=300)
+        filename_pattern = self.hdf5_filename_pattern.format(snap_num=snap_num)
+        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}", self.hdf5_subdir, filename_pattern)
+
+        if snap_num == self.final_snapshot:
+            soap_data = SOAPData(filename, mass_cut=self.final_mass_cut, radius_cut=self.final_radius_cut)
             soap_data.load_groups(properties=["BoundSubhalo/CentreOfMass", "BoundSubhalo/TotalMass", "SOAP/ProgenitorIndex", "SOAP/DescendantIndex"], only_centrals=True)
         else:
             soap_data = SOAPData(filename)
@@ -51,7 +59,7 @@ class MergerTreeTracer:
     
     def trace_cluster_members_batch(self, cluster_members, cluster_data, target_snapshot=30):
         """Trace all members using 2D arrays per mcmc_id with validation"""
-        
+
         # Group members by mcmc_id
         mcmc_groups = defaultdict(list)
         for i, member in enumerate(cluster_members):
@@ -62,8 +70,8 @@ class MergerTreeTracer:
                 'mass': cluster_data['masses'][i],
                 'progenitor_index': cluster_data['progenitor_indices'][i]
             })
-        
-        n_snapshots = 77 - target_snapshot + 1
+
+        n_snapshots = self.final_snapshot - target_snapshot + 1
         
         # Initialize arrays per mcmc_id
         position_arrays = {}
@@ -78,21 +86,21 @@ class MergerTreeTracer:
             valid_arrays[mcmc_id] = np.zeros((n_snapshots, n_haloes), dtype=bool)
             current_indices[mcmc_id] = np.full(n_haloes, -1, dtype=int)
             
-            # Fill snapshot 77 data
+            # Fill final snapshot data
             for j, member in enumerate(members):
                 if member['progenitor_index'] >= 0:
                     position_arrays[mcmc_id][0, j] = member['position']
                     mass_arrays[mcmc_id][0, j] = member['mass']
                     valid_arrays[mcmc_id][0, j] = True
                     current_indices[mcmc_id][j] = member['progenitor_index']
-        
+
         print(f"Initialized arrays for {len(mcmc_groups)} MCMC samples")
-        
+
         # Keep previous snapshot in memory for validation
         prev_snapshots = {}
-        
+
         # Process each snapshot
-        for snap_idx, snap_num in enumerate(range(76, target_snapshot - 1, -1)):
+        for snap_idx, snap_num in enumerate(range(self.final_snapshot - 1, target_snapshot - 1, -1)):
             print(f"Processing snapshot {snap_num} ({snap_idx + 1}/{n_snapshots - 1})")
             
             current_snapshots = {}
@@ -141,14 +149,14 @@ class MergerTreeTracer:
         
         # Collect results
         results = {}
-        
+
         for mcmc_id, members in mcmc_groups.items():
             for j, member in enumerate(members):
                 valid_snaps = valid_arrays[mcmc_id][:, j]
                 if np.sum(valid_snaps) > 1:
                     valid_positions = position_arrays[mcmc_id][valid_snaps, j]
                     valid_masses = mass_arrays[mcmc_id][valid_snaps, j]
-                    valid_snapshots = np.array([77 - i for i in range(n_snapshots)])[valid_snaps]
+                    valid_snapshots = np.array([self.final_snapshot - i for i in range(n_snapshots)])[valid_snaps]
                     
                     results[f"{mcmc_id}_{member['original_index']}"] = {
                         'mcmc_id': mcmc_id,

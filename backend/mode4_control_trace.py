@@ -7,11 +7,15 @@ from backend.config_loader import load_config
 from backend.io import save_halo_traces_to_hdf5
 
 class ControlHaloTracer:
-    def __init__(self, basedir, observer_coords, rank=0):
+    def __init__(self, basedir, observer_coords, rank=0, hdf5_subdir="soap/SOAP_uncompressed/HBTplus",
+                 hdf5_filename_pattern="halo_properties_{snap_num:04d}.hdf5", final_snapshot=77):
         self.basedir = basedir
         self.observer_coords = observer_coords
         self.rank = rank
-        
+        self.hdf5_subdir = hdf5_subdir
+        self.hdf5_filename_pattern = hdf5_filename_pattern
+        self.final_snapshot = final_snapshot
+
         # Extended property list
         self.to_load = [
             "BoundSubhalo/TotalMass",
@@ -40,9 +44,10 @@ class ControlHaloTracer:
     
     def _load_snapshot(self, mcmc_id, snap_num):
         """Load a single snapshot"""
-        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_{snap_num:04d}.hdf5")
-        
-        if snap_num >= 77:
+        filename_pattern = self.hdf5_filename_pattern.format(snap_num=snap_num)
+        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}", self.hdf5_subdir, filename_pattern)
+
+        if snap_num >= self.final_snapshot:
             raise ValueError("Should not be loading final snapshot during this phase")
         else:
             soap_data = SOAPData(filename)
@@ -57,7 +62,8 @@ class ControlHaloTracer:
     
     def load_control_haloes(self, mcmc_id, m200_mass_cut, radius_cut):
         """Load and filter haloes from control simulation final snapshot"""
-        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
+        filename_pattern = self.hdf5_filename_pattern.format(snap_num=self.final_snapshot)
+        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}", self.hdf5_subdir, filename_pattern)
         
         soap_data = SOAPData(filename, mass_cut=m200_mass_cut)
         soap_data.load_groups(properties=self.to_load, only_centrals=True)
@@ -93,7 +99,7 @@ class ControlHaloTracer:
         return halo_list
     
     def trace_haloes_for_mcmc(self, halo_list, mcmc_id, target_snapshot):
-        n_snapshots = 77 - target_snapshot + 1
+        n_snapshots = self.final_snapshot - target_snapshot + 1
         n_haloes = len(halo_list)
         
         # Initialize history arrays for all properties
@@ -127,7 +133,7 @@ class ControlHaloTracer:
                 valid_flags[i, 0] = True
         
         # Process each snapshot backward
-        for snap_idx, snap_num in enumerate(range(76, target_snapshot - 1, -1)):
+        for snap_idx, snap_num in enumerate(range(self.final_snapshot - 1, target_snapshot - 1, -1)):
             print(f"  Rank {self.rank}: Processing control MCMC {mcmc_id}, snapshot {snap_num}")
             
             active_mask = current_indices >= 0
@@ -168,7 +174,7 @@ class ControlHaloTracer:
         for i, halo in enumerate(halo_list):
             valid_snaps = valid_flags[i, :]
             if np.sum(valid_snaps) > 1:
-                valid_snapshots = np.array([77 - j for j in range(n_snapshots)])[valid_snaps]
+                valid_snapshots = np.array([self.final_snapshot - j for j in range(n_snapshots)])[valid_snaps]
                 
                 halo_key = f"control_mcmc_{mcmc_id}_halo_{halo['original_index']}"
                 results[halo_key] = {
@@ -188,8 +194,14 @@ class ControlHaloTracer:
 def load_control_haloes_all_mcmc(config):
     """Load haloes from all control simulations"""
     mcmc_haloes = defaultdict(list)
-    
-    tracer = ControlHaloTracer(config.mode4.basedir, config.mode4.observer_coords)
+
+    tracer = ControlHaloTracer(
+        config.mode4.basedir,
+        config.mode4.observer_coords,
+        hdf5_subdir=config.global_config.hdf5_subdir,
+        hdf5_filename_pattern=config.global_config.hdf5_filename_pattern,
+        final_snapshot=config.global_config.final_snapshot
+    )
     
     for mcmc_id in range(config.mode4.mcmc_start, config.mode4.mcmc_end + 1):
         print(f"Loading control haloes from MCMC {mcmc_id}")
@@ -259,7 +271,10 @@ def run_mode4(config_path="config.toml", output_dir="output"):
             'm200_mass_cut': config.mode4.m200_mass_cut,
             'radius_cut': config.mode4.radius_cut,
             'mcmc_start': config.mode4.mcmc_start,
-            'mcmc_end': config.mode4.mcmc_end
+            'mcmc_end': config.mode4.mcmc_end,
+            'hdf5_subdir': config.global_config.hdf5_subdir,
+            'hdf5_filename_pattern': config.global_config.hdf5_filename_pattern,
+            'final_snapshot': config.global_config.final_snapshot
         }
     else:
         mcmc_haloes = None
@@ -274,7 +289,14 @@ def run_mode4(config_path="config.toml", output_dir="output"):
     print(f"Rank {rank}: Assigned {len(my_mcmc_work)} control simulations to process")
     
     # Each rank processes their assigned MCMC samples
-    tracer = ControlHaloTracer(metadata_to_broadcast['basedir'], metadata_to_broadcast['observer_coords'], rank)
+    tracer = ControlHaloTracer(
+        metadata_to_broadcast['basedir'],
+        metadata_to_broadcast['observer_coords'],
+        rank,
+        hdf5_subdir=metadata_to_broadcast.get('hdf5_subdir', 'soap/SOAP_uncompressed/HBTplus'),
+        hdf5_filename_pattern=metadata_to_broadcast.get('hdf5_filename_pattern', 'halo_properties_{snap_num:04d}.hdf5'),
+        final_snapshot=metadata_to_broadcast.get('final_snapshot', 77)
+    )
     my_halo_traces = {}
     
     for mcmc_id, halo_list in my_mcmc_work.items():

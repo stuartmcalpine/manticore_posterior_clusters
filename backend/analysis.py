@@ -15,15 +15,22 @@ __all__ = [
 def analyze_volume_ratios_batch(clusters,
                                 config,
                                 trace_filename,
-                                min_cluster_size=40,
-                                mass_tolerance_dex=0.1,
-                                target_snapshot=10,
-                                min_match_rate=0.8,
+                                min_cluster_size=None,
+                                mass_tolerance_dex=None,
+                                target_snapshot=None,
+                                min_match_rate=None,
                                 output_dir=None):
     """
     Enhanced batch analysis: returns mass, legacy volume ratio (convex hull),
     dimensionless scatter ratio (s_ctrl/s_data), and information gain (bits).
     """
+    # Use config values if parameters not provided
+    min_cluster_size = min_cluster_size if min_cluster_size is not None else config.mode2.min_cluster_size
+    mass_tolerance_dex = mass_tolerance_dex if mass_tolerance_dex is not None else config.mode2.mass_tolerance_dex
+    target_snapshot = target_snapshot if target_snapshot is not None else config.mode2.target_snapshot
+    min_match_rate = min_match_rate if min_match_rate is not None else config.mode2.min_match_rate
+    final_snapshot = config.global_config.final_snapshot
+
     # Filter clusters by size
     large_clusters = [cluster for cluster in clusters if cluster['cluster_size'] >= min_cluster_size]
     
@@ -78,8 +85,8 @@ def analyze_volume_ratios_batch(clusters,
         control_volume = calculate_lagrangian_volume(control_traces, target_snapshot)
         
         # --- Covariance-based metrics ---
-        Xinit_data, Xfin_data = _get_initial_final_positions(constrained_traces, init_snap=target_snapshot, final_snap=77)
-        Xinit_ctrl, Xfin_ctrl = _get_initial_final_positions(control_traces, init_snap=target_snapshot, final_snap=77)
+        Xinit_data, Xfin_data = _get_initial_final_positions(constrained_traces, init_snap=target_snapshot, final_snap=final_snapshot)
+        Xinit_ctrl, Xfin_ctrl = _get_initial_final_positions(control_traces, init_snap=target_snapshot, final_snap=final_snapshot)
         if Xinit_data.shape[0] < 2 or Xinit_ctrl.shape[0] < 2:
             continue
         
@@ -151,10 +158,10 @@ def find_control_matches_batch(
     control_index: Dict[str, Any],
     control_filename: str,
     config: Any,
-    mass_tolerance_dex: float = 0.1,
-    min_match_rate: float = 0.8,
-    target_snapshot: int = 10,
-    distance_tolerance_rel: float = 0.2,
+    mass_tolerance_dex: float = None,
+    min_match_rate: float = None,
+    target_snapshot: int = None,
+    distance_tolerance_rel: float = None,
     output_dir: str = None,
 ) -> Dict[int, Dict[str, Any]]:
     """
@@ -190,6 +197,13 @@ def find_control_matches_batch(
           }, ...
         }
     """
+    # Use config values if parameters not provided
+    mass_tolerance_dex = mass_tolerance_dex if mass_tolerance_dex is not None else config.mode2.mass_tolerance_dex
+    min_match_rate = min_match_rate if min_match_rate is not None else config.mode2.min_match_rate
+    target_snapshot = target_snapshot if target_snapshot is not None else config.mode2.target_snapshot
+    distance_tolerance_rel = distance_tolerance_rel if distance_tolerance_rel is not None else config.mode2.distance_tolerance_rel
+    final_snapshot = config.global_config.final_snapshot
+
     cluster_results: Dict[int, Dict[str, Any]] = {}
 
     # Extract control arrays once
@@ -216,7 +230,7 @@ def find_control_matches_batch(
         constrained_halo_data: List[Dict[str, Any]] = []
 
         for trace in constrained_traces:
-            final_idx = np.where(trace['snapshots'] == 77)[0]
+            final_idx = np.where(trace['snapshots'] == final_snapshot)[0]
             if len(final_idx) == 0:
                 continue
             fi = final_idx[0]
@@ -335,9 +349,9 @@ def find_control_matches_batch(
                 continue
 
             control_trace = all_control_traces[control_key].copy()
-            
+
             # Get control final position
-            final_idx = np.where(control_trace['snapshots'] == 77)[0]
+            final_idx = np.where(control_trace['snapshots'] == final_snapshot)[0]
             if len(final_idx) == 0:
                 continue
             fi = final_idx[0]
@@ -372,10 +386,10 @@ def find_control_matches_and_recenter_single(
     cluster_id: int,
     config: Any,
     trace_filename: str,
-    mass_tolerance_dex: float = 0.1,
-    min_match_rate: float = 0.8,
-    target_snapshot: int = 10,
-    distance_tolerance_rel: float = 0.2,
+    mass_tolerance_dex: float = None,
+    min_match_rate: float = None,
+    target_snapshot: int = None,
+    distance_tolerance_rel: float = None,
     output_dir: str = None,
 ):
     """
@@ -405,6 +419,12 @@ def find_control_matches_and_recenter_single(
         - constrained: list of constrained traces (or None)
         - controls: list of matched control traces (or None)
     """
+    # Use config values if parameters not provided
+    mass_tolerance_dex = mass_tolerance_dex if mass_tolerance_dex is not None else config.mode2.mass_tolerance_dex
+    min_match_rate = min_match_rate if min_match_rate is not None else config.mode2.min_match_rate
+    target_snapshot = target_snapshot if target_snapshot is not None else config.mode2.target_snapshot
+    distance_tolerance_rel = distance_tolerance_rel if distance_tolerance_rel is not None else config.mode2.distance_tolerance_rel
+
     # Load control index
     if output_dir is None:
         output_dir = config.global_config.output_dir

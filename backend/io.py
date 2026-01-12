@@ -267,9 +267,10 @@ def save_halo_traces_to_hdf5(halo_traces, config, cluster_metadata, output_dir, 
         cluster_ids = []
         halo_keys = []
         
+        final_snapshot = config.global_config.final_snapshot
         for halo_key, trace_data in halo_traces.items():
-            # Find final snapshot (77) data
-            final_idx = np.where(trace_data['snapshots'] == 77)[0]
+            # Find final snapshot data
+            final_idx = np.where(trace_data['snapshots'] == final_snapshot)[0]
             if len(final_idx) > 0:
                 fi = final_idx[0]
                 

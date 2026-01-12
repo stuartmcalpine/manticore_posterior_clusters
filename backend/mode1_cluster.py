@@ -4,13 +4,15 @@ from backend.io import ensure_output_dir, save_clusters_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, enhanced_find_stable_haloes, analyze_mass_distribution_in_clusters
 
 def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering=True,
-              mass_outlier_threshold=0.3, use_mass_distance=True, eps=None, min_samples=None):
+              mass_outlier_threshold=None, use_mass_distance=None, eps=None, min_samples=None):
     config = load_config(config_path)
     ensure_output_dir(output_dir)
 
-    # Determine which eps and min_samples to use
+    # Determine which parameters to use (command-line overrides config)
     clustering_eps = eps if eps is not None else config.mode1.eps
     clustering_min_samples = min_samples if min_samples is not None else config.mode1.min_samples
+    mass_outlier_thresh = mass_outlier_threshold if mass_outlier_threshold is not None else config.mode1.mass_outlier_threshold
+    use_mass_dist = use_mass_distance if use_mass_distance is not None else config.mode1.use_mass_distance
 
     print("Loading MCMC data...")
     mcmc_data = load_data_with_radius_filter(config)
@@ -21,11 +23,11 @@ def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering
 
     print(f"Finding stable halo clusters (eps={clustering_eps}, min_samples={clustering_min_samples})...")
     if use_mass_filtering:
-        print(f"Using M200 mass filtering with threshold {mass_outlier_threshold} dex")
+        print(f"Using M200 mass filtering with threshold {mass_outlier_thresh} dex")
         stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = enhanced_find_stable_haloes(
             mcmc_data, config,
-            mass_outlier_threshold=mass_outlier_threshold,
-            use_mass_distance=use_mass_distance,
+            mass_outlier_threshold=mass_outlier_thresh,
+            use_mass_distance=use_mass_dist,
             eps=clustering_eps,
             min_samples=clustering_min_samples
         )

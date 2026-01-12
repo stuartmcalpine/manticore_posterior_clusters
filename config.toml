@@ -1,37 +1,118 @@
 # config.toml
+# Configuration file for the Manticore Posterior Clustering Pipeline
+
 [global]
+# Base directory containing the constrained simulation data
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/2MPP_MULTIBIN_N256_DES_V2/R1024"
+
+# Observer coordinates in Mpc (typically box center for Manticore simulations)
 observer_coords = [500.0, 500.0, 500.0]
+
+# Output directory for results (clusters, traces, etc.)
 output_dir = "output"
+
+# Simulation box size in Mpc
 boxsize = 1000.0
 
+# Final snapshot number (z=0 snapshot in SWIFT simulations)
+final_snapshot = 77
+
+# Subdirectory path within each mcmc_X folder containing HDF5 halo catalogs
+hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
+
+# Filename pattern for HDF5 snapshot files ({snap_num:04d} is replaced with snapshot number)
+hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
+
 [mode1]
+# First MCMC sample index to include in clustering analysis
 mcmc_start = 0
+
+# Last MCMC sample index to include in clustering analysis
 mcmc_end = 79
+
+# Minimum M200 halo mass in solar masses for inclusion in clustering
 m200_mass_cut = 0.5e14
+
+# Maximum distance from observer in Mpc for halo inclusion
 radius_cut = 400.0
+
+# DBSCAN epsilon parameter in Mpc (neighborhood radius for clustering)
 eps = 1.75
+
+# DBSCAN minimum samples parameter (minimum halos to form a cluster)
 min_samples = 9
 
+# Log-mass threshold in dex for outlier detection (0.3 dex ~ factor of 2 mass difference)
+mass_outlier_threshold = 0.3
+
+# Whether to use combined position+mass distance for MCMC constraint selection
+use_mass_distance = true
+
+# Whether to weight halo positions by mass during clustering
+mass_weighted_clustering = false
+
+# Power to raise mass weights to when mass_weighted_clustering is enabled (affects weighting strength)
+mass_weight_power = 0.5
+
 [mode2]
+# Earliest snapshot to trace halos back to (lower = further back in time)
 target_snapshot = 10
+
+# Minimum cluster size (number of members) required for tracing
 min_cluster_size = 40
 
+# Allowed log10 mass difference in dex for matching control halos (0.1 dex ~ factor of 1.26)
+mass_tolerance_dex = 0.1
+
+# Minimum fraction of constrained halos that must be matched to control halos (0-1)
+min_match_rate = 0.8
+
+# Relative tolerance for distance traveled matching (0.2 = 20% difference allowed)
+distance_tolerance_rel = 0.2
+
 [mode3]
+# Base directory containing the control (unconstrained) simulation data
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
+
+# First control simulation index
 mcmc_start = 0
+
+# Last control simulation index
 mcmc_end = 9
+
+# Minimum M200 halo mass in solar masses for control simulations
 m200_mass_cut = 0.5e14
+
+# Maximum distance from observer in Mpc for control simulations
 radius_cut = 400.0
+
+# Number of random observer position samplings per control simulation
 num_samplings = 8
+
+# DBSCAN epsilon parameter in Mpc for control simulation clustering
 eps = 1.75
+
+# DBSCAN minimum samples parameter for control simulation clustering
 min_samples = 9
 
 [mode4]
+# Base directory containing the control simulation data for tracing
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
+
+# First control simulation index for tracing
 mcmc_start = 0
+
+# Last control simulation index for tracing
 mcmc_end = 9
+
+# Minimum M200 halo mass in solar masses for control halo tracing
 m200_mass_cut = 0.5e14
+
+# Maximum distance from observer in Mpc for control halo tracing
 radius_cut = 400.0
+
+# Earliest snapshot to trace control halos back to
 target_snapshot = 10
+
+# Observer coordinates in Mpc for control simulations (typically box center)
 observer_coords = [500.0, 500.0, 500.0]

@@ -51,7 +51,9 @@ def load_random_control_data(config):
         random_observer = np.random.uniform(0, config.global_config.boxsize, 3)
         
         # Load the simulation
-        filename = os.path.join(config.mode3.basedir, f"mcmc_{sim_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
+        final_snap = config.global_config.final_snapshot
+        filename_pattern = config.global_config.hdf5_filename_pattern.format(snap_num=final_snap)
+        filename = os.path.join(config.mode3.basedir, f"mcmc_{sim_id}", config.global_config.hdf5_subdir, filename_pattern)
         soap_data = SOAPData(filename)
         soap_data.load_groups(properties=to_load, only_centrals=True)
         soap_data.set_observer(random_observer, skip_redshift=True, radius_cut=config.mode3.radius_cut)

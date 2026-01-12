@@ -9,8 +9,11 @@ class GlobalConfig:
     observer_coords: List[float]
     output_dir: str
     boxsize: float
+    final_snapshot: int
+    hdf5_subdir: str
+    hdf5_filename_pattern: str
 
-@dataclass 
+@dataclass
 class Mode1Config:
     mcmc_start: int
     mcmc_end: int
@@ -18,11 +21,18 @@ class Mode1Config:
     radius_cut: float
     eps: float
     min_samples: int
+    mass_outlier_threshold: float
+    use_mass_distance: bool
+    mass_weighted_clustering: bool
+    mass_weight_power: float
 
 @dataclass
 class Mode2Config:
     target_snapshot: int
     min_cluster_size: int
+    mass_tolerance_dex: float
+    min_match_rate: float
+    distance_tolerance_rel: float
 
 @dataclass
 class Mode3Config:
@@ -56,28 +66,38 @@ class Config:
 def load_config(config_path: str = "config.toml") -> Config:
     with open(config_path, 'r') as f:
         data = toml.load(f)
-    
+
     global_config = GlobalConfig(
         basedir=str(data['global']['basedir']),
         observer_coords=[float(x) for x in data['global']['observer_coords']],
         output_dir=str(data['global']['output_dir']),
-        boxsize=float(data['global']['boxsize'])
+        boxsize=float(data['global']['boxsize']),
+        final_snapshot=int(data['global'].get('final_snapshot', 77)),
+        hdf5_subdir=str(data['global'].get('hdf5_subdir', 'soap/SOAP_uncompressed/HBTplus')),
+        hdf5_filename_pattern=str(data['global'].get('hdf5_filename_pattern', 'halo_properties_{snap_num:04d}.hdf5'))
     )
-    
+
     mode1_config = Mode1Config(
         mcmc_start=int(data['mode1']['mcmc_start']),
         mcmc_end=int(data['mode1']['mcmc_end']),
         m200_mass_cut=float(data['mode1']['m200_mass_cut']),
         radius_cut=float(data['mode1']['radius_cut']),
         eps=float(data['mode1']['eps']),
-        min_samples=int(data['mode1']['min_samples'])
+        min_samples=int(data['mode1']['min_samples']),
+        mass_outlier_threshold=float(data['mode1'].get('mass_outlier_threshold', 0.3)),
+        use_mass_distance=bool(data['mode1'].get('use_mass_distance', True)),
+        mass_weighted_clustering=bool(data['mode1'].get('mass_weighted_clustering', False)),
+        mass_weight_power=float(data['mode1'].get('mass_weight_power', 0.5))
     )
-    
+
     mode2_config = Mode2Config(
         target_snapshot=int(data['mode2']['target_snapshot']),
-        min_cluster_size=int(data['mode2']['min_cluster_size'])
+        min_cluster_size=int(data['mode2']['min_cluster_size']),
+        mass_tolerance_dex=float(data['mode2'].get('mass_tolerance_dex', 0.1)),
+        min_match_rate=float(data['mode2'].get('min_match_rate', 0.8)),
+        distance_tolerance_rel=float(data['mode2'].get('distance_tolerance_rel', 0.2))
     )
-    
+
     mode3_config = Mode3Config(
         basedir=str(data['mode3']['basedir']),
         mcmc_start=int(data['mode3']['mcmc_start']),
@@ -88,7 +108,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         eps=float(data['mode3']['eps']),
         min_samples=int(data['mode3']['min_samples'])
     )
-    
+
     mode4_config = Mode4Config(
         basedir=str(data['mode4']['basedir']),
         mcmc_start=int(data['mode4']['mcmc_start']),
@@ -98,7 +118,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         target_snapshot=int(data['mode4']['target_snapshot']),
         observer_coords=[float(x) for x in data['mode4']['observer_coords']]
     )
-    
+
     return Config(
         global_config=global_config,
         mode1=mode1_config,

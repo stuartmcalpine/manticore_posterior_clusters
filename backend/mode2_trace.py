@@ -7,11 +7,15 @@ from backend.config_loader import load_config
 from backend.io import load_clusters_from_hdf5, save_halo_traces_to_hdf5
 
 class HaloTracer:
-    def __init__(self, basedir, observer_coords, rank=0):
+    def __init__(self, basedir, observer_coords, rank=0, hdf5_subdir="soap/SOAP_uncompressed/HBTplus",
+                 hdf5_filename_pattern="halo_properties_{snap_num:04d}.hdf5", final_snapshot=77):
         self.basedir = basedir
         self.observer_coords = observer_coords
         self.rank = rank
-        
+        self.hdf5_subdir = hdf5_subdir
+        self.hdf5_filename_pattern = hdf5_filename_pattern
+        self.final_snapshot = final_snapshot
+
         # Extended property list
         self.to_load = [
             "BoundSubhalo/TotalMass",
@@ -40,9 +44,10 @@ class HaloTracer:
     
     def _load_snapshot(self, mcmc_id, snap_num):
         """Load a single snapshot with validation data"""
-        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_{snap_num:04d}.hdf5")
-        
-        if snap_num >= 77:
+        filename_pattern = self.hdf5_filename_pattern.format(snap_num=snap_num)
+        filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}", self.hdf5_subdir, filename_pattern)
+
+        if snap_num >= self.final_snapshot:
             raise ValueError("Should not be loading final snapshot during this phase")
             #soap_data = SOAPData(filename, mass_cut=1e15, radius_cut=300)
             #soap_data.load_groups(properties=self.to_load, only_centrals=True)
@@ -79,7 +84,7 @@ class HaloTracer:
         return validation_errors
     
     def trace_haloes_for_mcmc(self, halo_list, mcmc_id, target_snapshot):
-        n_snapshots = 77 - target_snapshot + 1
+        n_snapshots = self.final_snapshot - target_snapshot + 1
         n_haloes = len(halo_list)
         
         # Initialize history arrays for all properties
@@ -113,7 +118,7 @@ class HaloTracer:
                 valid_flags[i, 0] = True
         
         # Process each snapshot backward
-        for snap_idx, snap_num in enumerate(range(76, target_snapshot - 1, -1)):
+        for snap_idx, snap_num in enumerate(range(self.final_snapshot - 1, target_snapshot - 1, -1)):
             print(f"  Rank {self.rank}: Processing MCMC {mcmc_id}, snapshot {snap_num}")
             
             active_mask = current_indices >= 0
@@ -154,7 +159,7 @@ class HaloTracer:
         for i, halo in enumerate(halo_list):
             valid_snaps = valid_flags[i, :]
             if np.sum(valid_snaps) > 1:
-                valid_snapshots = np.array([77 - j for j in range(n_snapshots)])[valid_snaps]
+                valid_snapshots = np.array([self.final_snapshot - j for j in range(n_snapshots)])[valid_snaps]
                 
                 halo_key = f"mcmc_{mcmc_id}_halo_{halo['original_index']}"
                 results[halo_key] = {
@@ -258,7 +263,10 @@ def run_mode2(config_path="config.toml", output_dir="output"):
         metadata_to_broadcast = {
             'observer_coords': observer_coords,
             'basedir': basedir,
-            'cluster_metadata': cluster_metadata
+            'cluster_metadata': cluster_metadata,
+            'hdf5_subdir': config.global_config.hdf5_subdir,
+            'hdf5_filename_pattern': config.global_config.hdf5_filename_pattern,
+            'final_snapshot': config.global_config.final_snapshot
         }
     else:
         mcmc_haloes = None
@@ -273,7 +281,14 @@ def run_mode2(config_path="config.toml", output_dir="output"):
     print(f"Rank {rank}: Assigned {len(my_mcmc_work)} MCMC samples to process")
     
     # Each rank processes their assigned MCMC samples
-    tracer = HaloTracer(metadata_to_broadcast['basedir'], metadata_to_broadcast['observer_coords'], rank)
+    tracer = HaloTracer(
+        metadata_to_broadcast['basedir'],
+        metadata_to_broadcast['observer_coords'],
+        rank,
+        hdf5_subdir=metadata_to_broadcast.get('hdf5_subdir', 'soap/SOAP_uncompressed/HBTplus'),
+        hdf5_filename_pattern=metadata_to_broadcast.get('hdf5_filename_pattern', 'halo_properties_{snap_num:04d}.hdf5'),
+        final_snapshot=metadata_to_broadcast.get('final_snapshot', 77)
+    )
     my_halo_traces = {}
     
     for mcmc_id, halo_list in my_mcmc_work.items():

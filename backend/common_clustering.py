@@ -310,7 +310,9 @@ def load_data_with_radius_filter(config, radius_inner=None, radius_outer=None):
     ]
     
     for mcmc_id in range(config.mode1.mcmc_start, config.mode1.mcmc_end + 1):
-        filename = os.path.join(config.global_config.basedir, f"mcmc_{mcmc_id}/soap/SOAP_uncompressed/HBTplus/halo_properties_0077.hdf5")
+        final_snap = config.global_config.final_snapshot
+        filename_pattern = config.global_config.hdf5_filename_pattern.format(snap_num=final_snap)
+        filename = os.path.join(config.global_config.basedir, f"mcmc_{mcmc_id}", config.global_config.hdf5_subdir, filename_pattern)
         soap_data = SOAPData(filename)
         soap_data.load_groups(properties=to_load, only_centrals=True)
         soap_data.set_observer(config.global_config.observer_coords, skip_redshift=True, radius_cut=initial_radius_cut)
