@@ -153,7 +153,7 @@ class MapConfig:
             mask_combine_method="SINGLE",
             nside=2048,
             coord_system="G",
-            calibration_factor=1e6,
+            calibration_factor=1,
             remove_monopole=False, 
             remove_dipole=False,  # Already removed 
             nested=nested
