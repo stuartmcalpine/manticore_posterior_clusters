@@ -113,30 +113,48 @@ Edit `config.toml` to customize the analysis:
 basedir = "/path/to/constrained/simulations"
 observer_coords = [500.0, 500.0, 500.0]  # Mpc
 output_dir = "output"
-boxsize = 1000.0  # Mpc
+boxsize = 1000.0                          # Mpc
+final_snapshot = 77                       # z=0 snapshot number
+hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"  # Subdirectory for HDF5 files
+hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"  # Filename pattern
 
 [mode1]
-mcmc_start = 0          # First MCMC sample
-mcmc_end = 79           # Last MCMC sample
-m200_mass_cut = 0.5e14  # Minimum halo mass (M_sun)
-radius_cut = 400.0      # Maximum distance from observer (Mpc)
-eps = 1.75              # DBSCAN epsilon parameter (Mpc)
-min_samples = 9         # DBSCAN minimum cluster size
+mcmc_start = 0                # First MCMC sample
+mcmc_end = 79                 # Last MCMC sample
+m200_mass_cut = 0.5e14        # Minimum halo mass (M_sun)
+radius_cut = 400.0            # Maximum distance from observer (Mpc)
+eps = 1.75                    # DBSCAN epsilon parameter (Mpc)
+min_samples = 9               # DBSCAN minimum cluster size
+mass_outlier_threshold = 0.3  # Log-mass threshold for outlier detection (dex)
+use_mass_distance = true      # Use combined position+mass distance for MCMC constraint
+mass_weighted_clustering = false  # Weight positions by mass during clustering
+mass_weight_power = 0.5       # Power for mass weighting
 
 [mode2]
-target_snapshot = 10    # Earliest snapshot to trace back to
-min_cluster_size = 40   # Minimum cluster size to trace
+target_snapshot = 10          # Earliest snapshot to trace back to
+min_cluster_size = 40         # Minimum cluster size to trace
+mass_tolerance_dex = 0.1      # Log10 mass tolerance for control matching (dex)
+min_match_rate = 0.8          # Minimum fraction of halos that must be matched
+distance_tolerance_rel = 0.2  # Relative distance tolerance for matching (20%)
 
 [mode3]
 basedir = "/path/to/control/simulations"
 mcmc_start = 0
 mcmc_end = 9
-num_samplings = 8       # Random observer samples per simulation
-# ... other parameters
+m200_mass_cut = 0.5e14
+radius_cut = 400.0
+num_samplings = 8             # Random observer samples per simulation
+eps = 1.75
+min_samples = 9
 
 [mode4]
 basedir = "/path/to/control/simulations"
-# ... control simulation parameters
+mcmc_start = 0
+mcmc_end = 9
+m200_mass_cut = 0.5e14
+radius_cut = 400.0
+target_snapshot = 10
+observer_coords = [500.0, 500.0, 500.0]
 ```
 
 ## Typical Workflow

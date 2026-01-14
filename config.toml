@@ -42,6 +42,9 @@ eps = 1.75
 # DBSCAN minimum samples parameter (minimum halos to form a cluster)
 min_samples = 9
 
+# Minimum association size (number of members) required to save to HDF5 output
+min_association_size = 10
+
 # Log-mass threshold in dex for outlier detection (0.3 dex ~ factor of 2 mass difference)
 mass_outlier_threshold = 0.3
 

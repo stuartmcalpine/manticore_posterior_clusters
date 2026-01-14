@@ -26,7 +26,7 @@ def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance
     
     # Apply filtering criteria
     m200_cut = config.mode1.m200_mass_cut
-    size_cut = config.mode2.min_cluster_size
+    size_cut = config.mode1.min_association_size
     
     filtered_haloes = [
         cluster for cluster in stable_haloes 

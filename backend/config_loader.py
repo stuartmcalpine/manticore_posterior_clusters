@@ -21,6 +21,7 @@ class Mode1Config:
     radius_cut: float
     eps: float
     min_samples: int
+    min_association_size: int
     mass_outlier_threshold: float
     use_mass_distance: bool
     mass_weighted_clustering: bool
@@ -84,6 +85,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         radius_cut=float(data['mode1']['radius_cut']),
         eps=float(data['mode1']['eps']),
         min_samples=int(data['mode1']['min_samples']),
+        min_association_size=int(data['mode1'].get('min_association_size', 1)),
         mass_outlier_threshold=float(data['mode1'].get('mass_outlier_threshold', 0.3)),
         use_mass_distance=bool(data['mode1'].get('use_mass_distance', True)),
         mass_weighted_clustering=bool(data['mode1'].get('mass_weighted_clustering', False)),
