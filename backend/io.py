@@ -15,7 +15,9 @@ __all__ = [
     'get_cluster_trace_info',
     'load_single_cluster_traces',
     'find_clusters_in_window',
-    'load_single_cluster_members'
+    'load_single_cluster_members',
+    'save_raw_dbscan_to_hdf5',
+    'load_raw_dbscan_from_hdf5'
 ]
 
 def ensure_output_dir(output_dir):
@@ -598,3 +600,129 @@ def load_single_cluster_members(output_dir, filename, cluster_id):
    except Exception as e:
        print(f"Error loading cluster {cluster_id} from {filepath}: {e}")
        return None
+
+def save_raw_dbscan_to_hdf5(cluster_labels, positions, m200_masses, halo_provenance,
+                             combined_data, config, output_dir, filename="raw_clusters.h5"):
+    """
+    Save raw DBSCAN output (before MCMC constraint and mass filtering) to HDF5.
+
+    Parameters:
+    -----------
+    cluster_labels : array
+        Raw cluster labels from DBSCAN (-1 for noise)
+    positions : array
+        Halo positions (N x 3)
+    m200_masses : array
+        Halo M200 masses (N,)
+    halo_provenance : list of dict
+        List of {'mcmc_id': int, 'original_index': int} for each halo
+    combined_data : dict
+        Dictionary of all halo properties
+    config : Config
+        Configuration object with mode1a settings
+    output_dir : str
+        Output directory path
+    filename : str
+        Output filename
+    """
+    filepath = os.path.join(output_dir, filename)
+
+    with h5py.File(filepath, 'w') as f:
+        # Metadata group
+        meta_grp = f.create_group('metadata')
+        meta_grp.attrs['mcmc_start'] = config.mode1a.mcmc_start
+        meta_grp.attrs['mcmc_end'] = config.mode1a.mcmc_end
+        meta_grp.attrs['eps'] = config.mode1a.eps
+        meta_grp.attrs['min_samples'] = config.mode1a.min_samples
+        meta_grp.attrs['m200_mass_cut'] = config.mode1a.m200_mass_cut
+        meta_grp.attrs['radius_cut'] = config.mode1a.radius_cut
+        meta_grp.attrs['mass_weighted_clustering'] = config.mode1a.mass_weighted_clustering
+        meta_grp.attrs['mass_weight_power'] = config.mode1a.mass_weight_power
+        meta_grp.attrs['basedir'] = config.global_config.basedir
+        meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
+        meta_grp.attrs['boxsize'] = config.global_config.boxsize
+        meta_grp.attrs['final_snapshot'] = config.global_config.final_snapshot
+
+        # Raw DBSCAN results
+        dbscan_grp = f.create_group('dbscan')
+        dbscan_grp.create_dataset('cluster_labels', data=cluster_labels)
+        dbscan_grp.create_dataset('positions', data=positions)
+        dbscan_grp.create_dataset('m200_masses', data=m200_masses)
+
+        # Halo provenance
+        mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
+        original_indices = np.array([p['original_index'] for p in halo_provenance])
+        dbscan_grp.create_dataset('mcmc_ids', data=mcmc_ids)
+        dbscan_grp.create_dataset('original_indices', data=original_indices)
+
+        # Combined data (all halo properties)
+        combined_grp = f.create_group('combined_data')
+        for key, data in combined_data.items():
+            dataset_name = key.replace('/', '_')
+            combined_grp.create_dataset(dataset_name, data=data)
+
+        # Summary statistics
+        n_total = len(cluster_labels)
+        n_noise = np.sum(cluster_labels == -1)
+        n_clustered = n_total - n_noise
+        n_clusters = len(np.unique(cluster_labels[cluster_labels != -1]))
+
+        meta_grp.attrs['n_total_halos'] = n_total
+        meta_grp.attrs['n_noise'] = n_noise
+        meta_grp.attrs['n_clustered'] = n_clustered
+        meta_grp.attrs['n_clusters'] = n_clusters
+
+    print(f"\nRaw DBSCAN results saved to {filepath}")
+    print(f"  Total halos: {n_total}")
+    print(f"  Clustered halos: {n_clustered}")
+    print(f"  Noise halos: {n_noise}")
+    print(f"  Number of clusters: {n_clusters}")
+
+def load_raw_dbscan_from_hdf5(output_dir, filename="raw_clusters.h5"):
+    """
+    Load raw DBSCAN output from HDF5.
+
+    Returns:
+    --------
+    tuple : (cluster_labels, positions, m200_masses, halo_provenance, combined_data, metadata)
+    """
+    filepath = os.path.join(output_dir, filename)
+
+    with h5py.File(filepath, 'r') as f:
+        # Load metadata
+        metadata = {}
+        meta_grp = f['metadata']
+        for key in meta_grp.attrs.keys():
+            metadata[key] = meta_grp.attrs[key]
+
+        # Load DBSCAN results
+        dbscan_grp = f['dbscan']
+        cluster_labels = dbscan_grp['cluster_labels'][:]
+        positions = dbscan_grp['positions'][:]
+        m200_masses = dbscan_grp['m200_masses'][:]
+        mcmc_ids = dbscan_grp['mcmc_ids'][:]
+        original_indices = dbscan_grp['original_indices'][:]
+
+        # Reconstruct halo_provenance list
+        halo_provenance = []
+        for i in range(len(mcmc_ids)):
+            halo_provenance.append({
+                'mcmc_id': int(mcmc_ids[i]),
+                'original_index': int(original_indices[i])
+            })
+
+        # Load combined data
+        combined_data = {}
+        combined_grp = f['combined_data']
+        for key in combined_grp.keys():
+            # Convert back to original property name format
+            original_key = key.replace('_', '/')
+            combined_data[original_key] = combined_grp[key][:]
+
+    print(f"\nLoaded raw DBSCAN results from {filepath}")
+    print(f"  Total halos: {metadata.get('n_total_halos', len(cluster_labels))}")
+    print(f"  Clustered halos: {metadata.get('n_clustered', 'N/A')}")
+    print(f"  Noise halos: {metadata.get('n_noise', 'N/A')}")
+    print(f"  Number of clusters: {metadata.get('n_clusters', 'N/A')}")
+
+    return cluster_labels, positions, m200_masses, halo_provenance, combined_data, metadata

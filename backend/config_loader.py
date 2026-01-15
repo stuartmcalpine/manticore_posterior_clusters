@@ -28,6 +28,24 @@ class Mode1Config:
     mass_weight_power: float
 
 @dataclass
+class Mode1aConfig:
+    mcmc_start: int
+    mcmc_end: int
+    m200_mass_cut: float
+    radius_cut: float
+    eps: float
+    min_samples: int
+    mass_weighted_clustering: bool
+    mass_weight_power: float
+
+@dataclass
+class Mode1bConfig:
+    input_filename: str
+    min_association_size: int
+    mass_outlier_threshold: float
+    use_mass_distance: bool
+
+@dataclass
 class Mode2Config:
     target_snapshot: int
     min_cluster_size: int
@@ -60,6 +78,8 @@ class Mode4Config:
 class Config:
     global_config: GlobalConfig
     mode1: Mode1Config
+    mode1a: Mode1aConfig
+    mode1b: Mode1bConfig
     mode2: Mode2Config
     mode3: Mode3Config
     mode4: Mode4Config
@@ -121,9 +141,31 @@ def load_config(config_path: str = "config.toml") -> Config:
         observer_coords=[float(x) for x in data['mode4']['observer_coords']]
     )
 
+    # Load mode1a config if present, otherwise use default values
+    mode1a_config = Mode1aConfig(
+        mcmc_start=int(data.get('mode1a', data.get('mode1', {})).get('mcmc_start', 0)),
+        mcmc_end=int(data.get('mode1a', data.get('mode1', {})).get('mcmc_end', 79)),
+        m200_mass_cut=float(data.get('mode1a', data.get('mode1', {})).get('m200_mass_cut', 0.5e14)),
+        radius_cut=float(data.get('mode1a', data.get('mode1', {})).get('radius_cut', 400.0)),
+        eps=float(data.get('mode1a', data.get('mode1', {})).get('eps', 1.75)),
+        min_samples=int(data.get('mode1a', data.get('mode1', {})).get('min_samples', 9)),
+        mass_weighted_clustering=bool(data.get('mode1a', data.get('mode1', {})).get('mass_weighted_clustering', False)),
+        mass_weight_power=float(data.get('mode1a', data.get('mode1', {})).get('mass_weight_power', 0.5))
+    )
+
+    # Load mode1b config if present, otherwise use default values
+    mode1b_config = Mode1bConfig(
+        input_filename=str(data.get('mode1b', data.get('mode1', {})).get('input_filename', '')),
+        min_association_size=int(data.get('mode1b', data.get('mode1', {})).get('min_association_size', 10)),
+        mass_outlier_threshold=float(data.get('mode1b', data.get('mode1', {})).get('mass_outlier_threshold', 0.3)),
+        use_mass_distance=bool(data.get('mode1b', data.get('mode1', {})).get('use_mass_distance', True))
+    )
+
     return Config(
         global_config=global_config,
         mode1=mode1_config,
+        mode1a=mode1a_config,
+        mode1b=mode1b_config,
         mode2=mode2_config,
         mode3=mode3_config,
         mode4=mode4_config
