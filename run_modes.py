@@ -21,13 +21,16 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     
     if args.mode == '1':
-        print(f"Running Mode 1 with config={args.config}, output={args.output}")
+        print(f"Running Mode 1 (convenience wrapper for 1a + 1b) with config={args.config}, output={args.output}")
         if args.eps is not None:
             print(f"  Overriding eps={args.eps}")
         if args.min_samples is not None:
             print(f"  Overriding min_samples={args.min_samples}")
+        if args.mass_outlier_threshold is not None:
+            print(f"  Overriding mass_outlier_threshold={args.mass_outlier_threshold}")
         from backend.mode1_cluster import run_mode1
-        run_mode1(config_path=args.config, output_dir=args.output, eps=args.eps, min_samples=args.min_samples)
+        run_mode1(config_path=args.config, output_dir=args.output, eps=args.eps, min_samples=args.min_samples,
+                  mass_outlier_threshold=args.mass_outlier_threshold)
 
     elif args.mode == '1a':
         print(f"Running Mode 1a (Raw DBSCAN) with config={args.config}, output={args.output}")

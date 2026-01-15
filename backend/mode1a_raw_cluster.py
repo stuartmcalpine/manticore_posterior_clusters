@@ -1,9 +1,18 @@
 import numpy as np
 from copy import deepcopy
+from dataclasses import dataclass
 from sklearn.cluster import DBSCAN
 from backend.config_loader import load_config
 from backend.io import ensure_output_dir, save_raw_dbscan_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, combine_haloes
+
+# Temporary dataclass for load_data_with_radius_filter compatibility
+@dataclass
+class Mode1Wrapper:
+    mcmc_start: int
+    mcmc_end: int
+    m200_mass_cut: float
+    radius_cut: float
 
 def run_mode1a(config_path="config.toml", output_dir="output", eps=None, min_samples=None):
     """
@@ -36,9 +45,14 @@ def run_mode1a(config_path="config.toml", output_dir="output", eps=None, min_sam
     print("Mode 1a: Raw DBSCAN Clustering")
     print("=" * 60)
 
-    # Create a wrapper config where mode1 = mode1a for compatibility with load_data_with_radius_filter
+    # Create a wrapper config for compatibility with load_data_with_radius_filter
     config_wrapper = deepcopy(config)
-    config_wrapper.mode1 = config.mode1a
+    config_wrapper.mode1 = Mode1Wrapper(
+        mcmc_start=config.mode1a.mcmc_start,
+        mcmc_end=config.mode1a.mcmc_end,
+        m200_mass_cut=config.mode1a.m200_mass_cut,
+        radius_cut=config.mode1a.radius_cut
+    )
 
     # Step 1: Load data
     print("\nStep 1: Loading MCMC data...")

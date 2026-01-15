@@ -1,12 +1,29 @@
 import numpy as np
 import os
 from copy import deepcopy
-from backend.config_loader import load_config, Mode1Config
+from dataclasses import dataclass
+from typing import List
+from backend.config_loader import load_config
 from backend.io import ensure_output_dir, load_raw_dbscan_from_hdf5, save_clusters_to_hdf5
 from backend.common_clustering import (
     enforce_mcmc_constraint_with_mass_filter,
     _compute_shape_measures
 )
+
+# Temporary dataclass for save_clusters_to_hdf5 compatibility
+@dataclass
+class Mode1ConfigWrapper:
+    mcmc_start: int
+    mcmc_end: int
+    m200_mass_cut: float
+    radius_cut: float
+    eps: float
+    min_samples: int
+    min_association_size: int
+    mass_outlier_threshold: float
+    use_mass_distance: bool
+    mass_weighted_clustering: bool
+    mass_weight_power: float
 
 def run_mode1b(config_path="config.toml", output_dir="output", input_filename=None,
                mass_outlier_threshold=None, use_mass_distance=None):
@@ -174,7 +191,7 @@ def run_mode1b(config_path="config.toml", output_dir="output", input_filename=No
     # Create a wrapper config for save_clusters_to_hdf5
     # Combine metadata from mode1a output with mode1b settings
     config_wrapper = deepcopy(config)
-    config_wrapper.mode1 = Mode1Config(
+    config_wrapper.mode1 = Mode1ConfigWrapper(
         mcmc_start=int(metadata['mcmc_start']),
         mcmc_end=int(metadata['mcmc_end']),
         m200_mass_cut=float(metadata['m200_mass_cut']),

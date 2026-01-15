@@ -1,69 +1,41 @@
-import numpy as np
-from backend.config_loader import load_config
-from backend.io import ensure_output_dir, save_clusters_to_hdf5
-from backend.common_clustering import load_data_with_radius_filter, enhanced_find_stable_haloes, analyze_mass_distribution_in_clusters
+from backend.mode1a_raw_cluster import run_mode1a
+from backend.mode1b_postprocess import run_mode1b
 
-def run_mode1(config_path="config.toml", output_dir="output", use_mass_filtering=True,
-              mass_outlier_threshold=None, use_mass_distance=None, eps=None, min_samples=None):
-    config = load_config(config_path)
-    ensure_output_dir(output_dir)
+def run_mode1(config_path="config.toml", output_dir="output", eps=None, min_samples=None,
+              mass_outlier_threshold=None, use_mass_distance=None):
+    """
+    Mode 1: Complete clustering pipeline (convenience wrapper)
 
-    # Determine which parameters to use (command-line overrides config)
-    clustering_eps = eps if eps is not None else config.mode1.eps
-    clustering_min_samples = min_samples if min_samples is not None else config.mode1.min_samples
-    mass_outlier_thresh = mass_outlier_threshold if mass_outlier_threshold is not None else config.mode1.mass_outlier_threshold
-    use_mass_dist = use_mass_distance if use_mass_distance is not None else config.mode1.use_mass_distance
+    Runs Mode 1a (raw DBSCAN) followed by Mode 1b (post-processing corrections)
+    in sequence. This is equivalent to running:
+        python run_modes.py 1a
+        python run_modes.py 1b
+    """
+    print("=" * 60)
+    print("Mode 1: Complete Clustering Pipeline")
+    print("=" * 60)
+    print("\nThis runs Mode 1a (raw DBSCAN) followed by Mode 1b (post-processing)")
+    print()
 
-    print("Loading MCMC data...")
-    mcmc_data = load_data_with_radius_filter(config)
+    # Run Mode 1a
+    print("STEP 1: Running Mode 1a (Raw DBSCAN)...")
+    print("-" * 60)
+    run_mode1a(config_path=config_path, output_dir=output_dir, eps=eps, min_samples=min_samples)
 
-    print(f"Loaded data from MCMC samples {config.mode1.mcmc_start} to {config.mode1.mcmc_end}")
-    for mcmc_id, data in mcmc_data.items():
-        print(f"MCMC {mcmc_id}: {len(data['SO/200_crit/TotalMass'])} haloes")
+    print("\n" + "=" * 60)
+    print()
 
-    print(f"Finding stable halo clusters (eps={clustering_eps}, min_samples={clustering_min_samples})...")
-    if use_mass_filtering:
-        print(f"Using M200 mass filtering with threshold {mass_outlier_thresh} dex")
-        stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = enhanced_find_stable_haloes(
-            mcmc_data, config,
-            mass_outlier_threshold=mass_outlier_thresh,
-            use_mass_distance=use_mass_dist,
-            eps=clustering_eps,
-            min_samples=clustering_min_samples
-        )
-    else:
-        from backend.common_clustering import find_stable_haloes
-        stable_haloes, positions, m200_masses, halo_provenance, cluster_labels = find_stable_haloes(
-            mcmc_data, config, eps=clustering_eps, min_samples=clustering_min_samples
-        )
-    
-    print(f"Found {len(stable_haloes)} stable halo clusters")
-    
-    sorted_haloes = sorted(stable_haloes, key=lambda x: x['cluster_size'], reverse=True)
-    
-    print("\nTop 10 stable haloes by cluster size:")
-    for i, halo in enumerate(sorted_haloes[:10]):
-        print(f"\nHalo {i}:")
-        print(f"  Cluster size: {halo['cluster_size']}")
-        print(f"  M200 mass mean: {halo['mean_m200_mass']:.2e} ± {halo['m200_mass_std']:.2e}")
-        if 'mean_subhalo_mass' in halo:
-            print(f"  Subhalo mass mean: {halo['mean_subhalo_mass']:.2e} ± {halo['subhalo_mass_std']:.2e}")
-        if 'mean_m500' in halo:
-            print(f"  M500 mass mean: {halo['mean_m500']:.2e} ± {halo['m500_std']:.2e}")
-        if 'log_m200_mass_std' in halo:
-            print(f"  Log-M200 mean: {halo['mean_log_m200_mass']:.2f} ± {halo['log_m200_mass_std']:.2f}")
-            print(f"  Log-M200 range: {halo['log_m200_mass_range']:.2f} dex")
-        print(f"  Position mean: [{halo['mean_position'][0]:.1f}, {halo['mean_position'][1]:.1f}, {halo['mean_position'][2]:.1f}]")
-        print(f"  Position std: [{halo['position_std'][0]:.1f}, {halo['position_std'][1]:.1f}, {halo['position_std'][2]:.1f}]")
-    
-    if use_mass_filtering:
-        analyze_mass_distribution_in_clusters(sorted_haloes)
+    # Run Mode 1b
+    print("STEP 2: Running Mode 1b (Post-processing)...")
+    print("-" * 60)
+    run_mode1b(config_path=config_path, output_dir=output_dir,
+               input_filename=None,  # Will auto-detect from mode1a output
+               mass_outlier_threshold=mass_outlier_threshold,
+               use_mass_distance=use_mass_distance)
 
-    print("Saving clusters to HDF5...")
-    fname = f"clusters_eps_{str(clustering_eps).replace('.','p')}_min_samples_{clustering_min_samples}.h5"
-    save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance, cluster_labels, config, output_dir,
-            filename=fname)
+    print("\n" + "=" * 60)
     print("Mode 1 complete!")
+    print("=" * 60)
 
 if __name__ == '__main__':
     run_mode1()
