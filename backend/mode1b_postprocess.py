@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import List
 from backend.config_loader import load_config
-from backend.io import ensure_output_dir, load_raw_dbscan_from_hdf5, save_clusters_to_hdf5
+from backend.io import ensure_output_dir, load_clusters_from_hdf5, save_clusters_to_hdf5
 from backend.common_clustering import (
     enforce_mcmc_constraint_with_mass_filter,
     _compute_shape_measures
@@ -57,13 +57,62 @@ def run_mode1b(config_path="config.toml", output_dir="output", input_filename=No
     print("Mode 1b: Post-processing Corrections")
     print("=" * 60)
 
-    # Load raw DBSCAN output from mode1a
-    print(f"\nLoading raw DBSCAN output from: {input_filename}")
-    cluster_labels, positions, m200_masses, halo_provenance, combined_data, metadata = \
-        load_raw_dbscan_from_hdf5(output_dir, filename=input_filename)
+    # Load raw clusters from mode1a (standard HDF5 format)
+    print(f"\nLoading raw clusters from: {input_filename}")
+    raw_clusters, metadata = load_clusters_from_hdf5(output_dir, filename=input_filename, minimal=False, min_m200_mass=0)
+
+    # Reconstruct arrays from clusters for applying corrections
+    # We need to rebuild: positions, m200_masses, halo_provenance, cluster_labels, combined_data
+    positions_list = []
+    m200_masses_list = []
+    halo_provenance = []
+    cluster_labels_list = []
+    combined_data_keys = None
+
+    # Collect all halos from all clusters
+    for cluster in raw_clusters:
+        cluster_id = cluster['cluster_id']
+        n_members = cluster['cluster_size']
+        member_data = cluster['member_data']
+
+        # Add to arrays
+        positions_list.append(member_data['SO/200_crit/CentreOfMass'])
+        m200_masses_list.append(member_data['SO/200_crit/TotalMass'])
+        cluster_labels_list.extend([cluster_id] * n_members)
+
+        # Build provenance
+        mcmc_ids_in_cluster = member_data['mcmc/id']
+        orig_indices_in_cluster = member_data['halo/original/index']
+        for i in range(n_members):
+            halo_provenance.append({
+                'mcmc_id': int(mcmc_ids_in_cluster[i]),
+                'original_index': int(orig_indices_in_cluster[i])
+            })
+
+        # Initialize combined_data on first cluster
+        if combined_data_keys is None:
+            combined_data_keys = list(member_data.keys())
+
+    # Concatenate all arrays
+    positions = np.vstack(positions_list)
+    m200_masses = np.concatenate(m200_masses_list)
+    cluster_labels = np.array(cluster_labels_list)
+
+    # Rebuild combined_data
+    combined_data = {}
+    for key in combined_data_keys:
+        data_list = []
+        for cluster in raw_clusters:
+            data_list.append(cluster['member_data'][key])
+        if len(data_list[0].shape) == 1:
+            combined_data[key] = np.concatenate(data_list)
+        else:
+            combined_data[key] = np.vstack(data_list)
 
     # Extract MCMC IDs
     mcmc_ids = np.array([p['mcmc_id'] for p in halo_provenance])
+
+    print(f"  Loaded {len(raw_clusters)} raw clusters with {len(positions)} total halos")
 
     # Statistics before corrections
     n_total = len(cluster_labels)
