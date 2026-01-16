@@ -17,7 +17,9 @@ __all__ = [
     'find_clusters_in_window',
     'load_single_cluster_members',
     'save_raw_dbscan_to_hdf5',
-    'load_raw_dbscan_from_hdf5'
+    'load_raw_dbscan_from_hdf5',
+    'save_hdbscan_clusters_to_hdf5',
+    'load_hdbscan_clusters_from_hdf5'
 ]
 
 def ensure_output_dir(output_dir):
@@ -186,14 +188,43 @@ def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
             
             # Load all member data properties
             member_data = {}
-            for key in assoc_grp.keys():
-                # Convert back to original property name format
-                original_key = key.replace('_', '/')
 
-                if minimal and original_key not in ["SO/200_crit/CentreOfMass", "SO/200_crit/TotalMass", 
-                                                     "mcmc/id", "halo/original/index"]:
-                    continue
-                member_data[original_key] = assoc_grp[key][:]
+            # Check if member data is in a 'members' subgroup (new format) or directly in assoc_grp (old format)
+            if 'members' in assoc_grp:
+                # New format: member data is nested in 'members' group
+                members_grp = assoc_grp['members']
+
+                def extract_datasets(group, prefix=''):
+                    """Recursively extract datasets from nested groups."""
+                    for key in group.keys():
+                        full_key = f"{prefix}/{key}" if prefix else key
+                        item = group[key]
+
+                        if isinstance(item, h5py.Dataset):
+                            # This is a dataset, extract it
+                            if minimal and full_key not in ["SO/200/crit/CentreOfMass", "SO/200/crit/TotalMass",
+                                                            "mcmc/id", "halo/original/index"]:
+                                continue
+                            member_data[full_key] = item[:]
+                        elif isinstance(item, h5py.Group):
+                            # This is a group, recurse into it
+                            extract_datasets(item, full_key)
+
+                extract_datasets(members_grp)
+            else:
+                # Old format: datasets directly under association group
+                for key in assoc_grp.keys():
+                    # Skip merger_tree group if present
+                    if key == 'merger_tree':
+                        continue
+
+                    # Convert back to original property name format
+                    original_key = key.replace('_', '/')
+
+                    if minimal and original_key not in ["SO/200/crit/CentreOfMass", "SO/200/crit/TotalMass",
+                                                         "mcmc/id", "halo/original/index"]:
+                        continue
+                    member_data[original_key] = assoc_grp[key][:]
             
             # Reconstruct members list from member_data for backwards compatibility
             members = []
@@ -726,3 +757,310 @@ def load_raw_dbscan_from_hdf5(output_dir, filename="raw_clusters.h5"):
     print(f"  Number of clusters: {metadata.get('n_clusters', 'N/A')}")
 
     return cluster_labels, positions, m200_masses, halo_provenance, combined_data, metadata
+
+
+def save_hdbscan_clusters_to_hdf5(
+    cluster_summaries: List[Dict],
+    positions: np.ndarray,
+    masses: np.ndarray,
+    realization_ids: np.ndarray,
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    dropped_mask: np.ndarray,
+    config,
+    output_dir: str,
+    filename: str,
+    sigma_diagnostics: Dict = None,
+    sigma_logM: float = None
+) -> None:
+    """Save HDBSCAN clustering results to HDF5.
+
+    HDF5 Structure:
+    /metadata
+        @mcmc_start, @mcmc_end, @m200_mass_cut, @radius_cut
+        @min_cluster_size, @min_samples, @cluster_selection_method
+        @n_realizations, @n_total_halos, @n_clustered, @n_noise, @n_clusters
+        @sigma_logM, @existence_prob_stable, @existence_prob_tentative
+
+    /whitening (diagnostics for reproducibility)
+        @method, @sigma_logM
+        bin_centers, bin_sigmas (if binned interpolation used)
+
+    /clusters (one group per cluster)
+        /cluster_N
+            @cluster_id, @existence_prob, @n_realizations_present
+            @n_members, @center_xyz, @cov_xyz
+            @center_logM, @var_logM
+            @mean_m200_mass, @m200_mass_std, @log10_m200_mass_std
+            @mean_m500, @m500_std, @log10_m500_std
+            @mean_subhalo_mass, @subhalo_mass_std
+            @hdbscan_stability, @mean_membership_prob, @min_membership_prob
+            @ambiguity_rate, @status
+            @axis_ratio_ba, @axis_ratio_ca, @asphericity, @prolateness
+            # Member data arrays under /members subgroup
+            /members
+                positions (M, 3)
+                masses (M,)
+                realization_ids (M,)
+                membership_probs (M,)
+                ...other properties...
+
+    /assignments (all halos)
+        realization_id (N,)
+        x, y, z (N,)
+        mass (N,)
+        logM (N,)
+        label (N,) - cluster ID or -1
+        membership_prob (N,)
+        dropped_by_enforcement (N,) - bool
+    """
+    filepath = os.path.join(output_dir, filename)
+    n_realizations = config.mode1a.mcmc_end - config.mode1a.mcmc_start + 1
+
+    n_total_halos = len(labels)
+    n_noise = np.sum(labels == -1)
+    n_clustered = n_total_halos - n_noise
+    n_clusters = len(cluster_summaries)
+
+    with h5py.File(filepath, 'w') as f:
+        # Metadata group
+        meta_grp = f.create_group('metadata')
+        meta_grp.attrs['mcmc_start'] = config.mode1a.mcmc_start
+        meta_grp.attrs['mcmc_end'] = config.mode1a.mcmc_end
+        meta_grp.attrs['m200_mass_cut'] = config.mode1a.m200_mass_cut
+        meta_grp.attrs['radius_cut'] = config.mode1a.radius_cut
+        meta_grp.attrs['min_cluster_size'] = config.mode1a.min_cluster_size
+        meta_grp.attrs['min_samples'] = config.mode1a.min_samples
+        meta_grp.attrs['cluster_selection_method'] = config.mode1a.cluster_selection_method
+        meta_grp.attrs['n_realizations'] = n_realizations
+        meta_grp.attrs['n_total_halos'] = n_total_halos
+        meta_grp.attrs['n_clustered'] = n_clustered
+        meta_grp.attrs['n_noise'] = n_noise
+        meta_grp.attrs['n_clusters'] = n_clusters
+        meta_grp.attrs['existence_prob_stable'] = config.mode1a.existence_prob_stable
+        meta_grp.attrs['existence_prob_tentative'] = config.mode1a.existence_prob_tentative
+        meta_grp.attrs['basedir'] = config.global_config.basedir
+        meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
+
+        # Whitening diagnostics
+        whitening_grp = f.create_group('whitening')
+        if sigma_logM is not None:
+            whitening_grp.attrs['sigma_logM'] = sigma_logM
+        if sigma_diagnostics is not None:
+            whitening_grp.attrs['method'] = sigma_diagnostics.get('method', 'unknown')
+            if 'bin_centers' in sigma_diagnostics:
+                whitening_grp.create_dataset('bin_centers', data=sigma_diagnostics['bin_centers'])
+            if 'bin_sigmas' in sigma_diagnostics:
+                whitening_grp.create_dataset('bin_sigmas', data=sigma_diagnostics['bin_sigmas'])
+            if 'bin_counts' in sigma_diagnostics:
+                whitening_grp.create_dataset('bin_counts', data=sigma_diagnostics['bin_counts'])
+            if 'sigma_floor' in sigma_diagnostics:
+                whitening_grp.attrs['sigma_floor'] = sigma_diagnostics['sigma_floor']
+            if 'sigma_ceiling' in sigma_diagnostics:
+                whitening_grp.attrs['sigma_ceiling'] = sigma_diagnostics['sigma_ceiling']
+            if 'k' in sigma_diagnostics:
+                whitening_grp.attrs['knn_k'] = sigma_diagnostics['k']
+
+        # Summary group for quick access
+        summary_grp = f.create_group('summary')
+        if n_clusters > 0:
+            summary_grp.create_dataset('cluster_id', data=np.array([c['cluster_id'] for c in cluster_summaries]))
+            summary_grp.create_dataset('existence_prob', data=np.array([c['existence_prob'] for c in cluster_summaries]))
+            summary_grp.create_dataset('n_realizations_present', data=np.array([c['n_realizations_present'] for c in cluster_summaries]))
+            summary_grp.create_dataset('n_members', data=np.array([c['n_members'] for c in cluster_summaries]))
+            summary_grp.create_dataset('mean_m200_mass', data=np.array([c['mean_m200_mass'] for c in cluster_summaries]))
+            summary_grp.create_dataset('log10_m200_mass_std', data=np.array([c['log10_m200_mass_std'] for c in cluster_summaries]))
+            summary_grp.create_dataset('center_xyz', data=np.array([c['center_xyz'] for c in cluster_summaries]))
+            summary_grp.create_dataset('mean_membership_prob', data=np.array([c['mean_membership_prob'] for c in cluster_summaries]))
+            summary_grp.create_dataset('ambiguity_rate', data=np.array([c['ambiguity_rate'] for c in cluster_summaries]))
+
+            # Status as string array
+            dt = h5py.special_dtype(vlen=str)
+            summary_grp.create_dataset('status', data=np.array([c['status'] for c in cluster_summaries], dtype=object), dtype=dt)
+
+        # Clusters group (detailed per-cluster data)
+        clusters_grp = f.create_group('clusters')
+        for cluster in cluster_summaries:
+            cluster_id = cluster['cluster_id']
+            cluster_grp = clusters_grp.create_group(f'cluster_{cluster_id}')
+
+            # Scalar attributes
+            cluster_grp.attrs['cluster_id'] = cluster_id
+            cluster_grp.attrs['original_cluster_id'] = cluster.get('original_cluster_id', cluster_id)
+            cluster_grp.attrs['existence_prob'] = cluster['existence_prob']
+            cluster_grp.attrs['n_realizations_present'] = cluster['n_realizations_present']
+            cluster_grp.attrs['n_members'] = cluster['n_members']
+            cluster_grp.attrs['center_xyz'] = cluster['center_xyz']
+            cluster_grp.attrs['center_logM'] = cluster['center_logM']
+            cluster_grp.attrs['var_logM'] = cluster['var_logM'] if not np.isnan(cluster['var_logM']) else -1.0
+            cluster_grp.attrs['mean_m200_mass'] = cluster['mean_m200_mass']
+            cluster_grp.attrs['m200_mass_std'] = cluster['m200_mass_std'] if not np.isnan(cluster['m200_mass_std']) else -1.0
+            cluster_grp.attrs['log10_m200_mass_std'] = cluster['log10_m200_mass_std'] if not np.isnan(cluster['log10_m200_mass_std']) else -1.0
+            cluster_grp.attrs['mean_m500'] = cluster['mean_m500'] if not np.isnan(cluster['mean_m500']) else -1.0
+            cluster_grp.attrs['m500_std'] = cluster['m500_std'] if not np.isnan(cluster['m500_std']) else -1.0
+            cluster_grp.attrs['log10_m500_std'] = cluster['log10_m500_std'] if not np.isnan(cluster['log10_m500_std']) else -1.0
+            cluster_grp.attrs['mean_subhalo_mass'] = cluster['mean_subhalo_mass'] if not np.isnan(cluster['mean_subhalo_mass']) else -1.0
+            cluster_grp.attrs['subhalo_mass_std'] = cluster['subhalo_mass_std'] if not np.isnan(cluster['subhalo_mass_std']) else -1.0
+            cluster_grp.attrs['hdbscan_stability'] = cluster['hdbscan_stability'] if not np.isnan(cluster['hdbscan_stability']) else -1.0
+            cluster_grp.attrs['mean_membership_prob'] = cluster['mean_membership_prob']
+            cluster_grp.attrs['min_membership_prob'] = cluster['min_membership_prob']
+            cluster_grp.attrs['ambiguity_rate'] = cluster['ambiguity_rate']
+            cluster_grp.attrs['status'] = cluster['status']
+            cluster_grp.attrs['axis_ratio_ba'] = cluster['axis_ratio_ba'] if not np.isnan(cluster['axis_ratio_ba']) else -1.0
+            cluster_grp.attrs['axis_ratio_ca'] = cluster['axis_ratio_ca'] if not np.isnan(cluster['axis_ratio_ca']) else -1.0
+            cluster_grp.attrs['asphericity'] = cluster['asphericity'] if not np.isnan(cluster['asphericity']) else -1.0
+            cluster_grp.attrs['prolateness'] = cluster['prolateness'] if not np.isnan(cluster['prolateness']) else -1.0
+            cluster_grp.attrs['position_std'] = cluster['position_std']
+
+            # Covariance matrix
+            cov = cluster['cov_xyz']
+            if isinstance(cov, np.ndarray) and not np.any(np.isnan(cov)):
+                cluster_grp.create_dataset('cov_xyz', data=cov)
+
+            # Member data in subgroup
+            members_grp = cluster_grp.create_group('members')
+
+            # Core member arrays
+            member_indices = cluster['member_indices']
+            members_grp.create_dataset('positions', data=positions[member_indices])
+            members_grp.create_dataset('masses', data=masses[member_indices])
+            members_grp.create_dataset('realization_ids', data=realization_ids[member_indices])
+            members_grp.create_dataset('membership_probs', data=cluster['member_probs'])
+
+            # All other member properties from combined_data
+            if 'member_data' in cluster:
+                for key, data in cluster['member_data'].items():
+                    dataset_name = key.replace('/', '_')
+                    if dataset_name not in ['positions', 'masses', 'realization_ids', 'membership_probs']:
+                        members_grp.create_dataset(dataset_name, data=data)
+
+        # Assignments group (all halos)
+        assignments_grp = f.create_group('assignments')
+        assignments_grp.create_dataset('realization_id', data=realization_ids)
+        assignments_grp.create_dataset('x', data=positions[:, 0])
+        assignments_grp.create_dataset('y', data=positions[:, 1])
+        assignments_grp.create_dataset('z', data=positions[:, 2])
+        assignments_grp.create_dataset('mass', data=masses)
+        assignments_grp.create_dataset('logM', data=np.log10(masses))
+        assignments_grp.create_dataset('label', data=labels)
+        assignments_grp.create_dataset('membership_prob', data=probabilities)
+        assignments_grp.create_dataset('dropped_by_enforcement', data=dropped_mask)
+
+    print(f"\nHDBSCAN results saved to {filepath}")
+    print(f"  Total clusters: {n_clusters}")
+    print(f"  Total halos: {n_total_halos}")
+    print(f"  Clustered: {n_clustered} ({100*n_clustered/n_total_halos:.1f}%)")
+    print(f"  Noise: {n_noise} ({100*n_noise/n_total_halos:.1f}%)")
+
+
+def load_hdbscan_clusters_from_hdf5(
+    output_dir: str,
+    filename: str,
+    min_existence_prob: float = 0.0,
+    load_members: bool = True
+) -> tuple:
+    """Load HDBSCAN clustering results from HDF5.
+
+    Args:
+        output_dir: Directory containing the HDF5 file
+        filename: HDF5 filename
+        min_existence_prob: Minimum existence probability for loading clusters
+        load_members: Whether to load member data (set False for summary only)
+
+    Returns:
+        cluster_summaries: List of cluster dictionaries
+        assignments: Dictionary with all halo assignments
+        metadata: Dictionary with run metadata
+    """
+    filepath = os.path.join(output_dir, filename)
+
+    cluster_summaries = []
+    assignments = {}
+    metadata = {}
+
+    with h5py.File(filepath, 'r') as f:
+        # Load metadata
+        meta_grp = f['metadata']
+        for key in meta_grp.attrs.keys():
+            metadata[key] = meta_grp.attrs[key]
+
+        # Load whitening diagnostics if present
+        if 'whitening' in f:
+            whitening_grp = f['whitening']
+            metadata['whitening'] = {}
+            for key in whitening_grp.attrs.keys():
+                metadata['whitening'][key] = whitening_grp.attrs[key]
+            for key in whitening_grp.keys():
+                metadata['whitening'][key] = whitening_grp[key][:]
+
+        # Load assignments
+        if 'assignments' in f:
+            assignments_grp = f['assignments']
+            for key in assignments_grp.keys():
+                assignments[key] = assignments_grp[key][:]
+
+        # Load clusters
+        if 'clusters' in f:
+            clusters_grp = f['clusters']
+            for cluster_name in clusters_grp.keys():
+                cluster_grp = clusters_grp[cluster_name]
+
+                # Filter by existence probability
+                existence_prob = float(cluster_grp.attrs['existence_prob'])
+                if existence_prob < min_existence_prob:
+                    continue
+
+                cluster = {
+                    'cluster_id': int(cluster_grp.attrs['cluster_id']),
+                    'original_cluster_id': int(cluster_grp.attrs.get('original_cluster_id', cluster_grp.attrs['cluster_id'])),
+                    'existence_prob': existence_prob,
+                    'n_realizations_present': int(cluster_grp.attrs['n_realizations_present']),
+                    'n_members': int(cluster_grp.attrs['n_members']),
+                    'center_xyz': cluster_grp.attrs['center_xyz'],
+                    'center_logM': float(cluster_grp.attrs['center_logM']),
+                    'var_logM': float(cluster_grp.attrs['var_logM']) if cluster_grp.attrs['var_logM'] >= 0 else np.nan,
+                    'mean_m200_mass': float(cluster_grp.attrs['mean_m200_mass']),
+                    'm200_mass_std': float(cluster_grp.attrs['m200_mass_std']) if cluster_grp.attrs['m200_mass_std'] >= 0 else np.nan,
+                    'log10_m200_mass_std': float(cluster_grp.attrs['log10_m200_mass_std']) if cluster_grp.attrs['log10_m200_mass_std'] >= 0 else np.nan,
+                    'mean_m500': float(cluster_grp.attrs['mean_m500']) if cluster_grp.attrs['mean_m500'] >= 0 else np.nan,
+                    'm500_std': float(cluster_grp.attrs['m500_std']) if cluster_grp.attrs['m500_std'] >= 0 else np.nan,
+                    'log10_m500_std': float(cluster_grp.attrs['log10_m500_std']) if cluster_grp.attrs['log10_m500_std'] >= 0 else np.nan,
+                    'mean_subhalo_mass': float(cluster_grp.attrs['mean_subhalo_mass']) if cluster_grp.attrs['mean_subhalo_mass'] >= 0 else np.nan,
+                    'subhalo_mass_std': float(cluster_grp.attrs['subhalo_mass_std']) if cluster_grp.attrs['subhalo_mass_std'] >= 0 else np.nan,
+                    'hdbscan_stability': float(cluster_grp.attrs['hdbscan_stability']) if cluster_grp.attrs['hdbscan_stability'] >= 0 else np.nan,
+                    'mean_membership_prob': float(cluster_grp.attrs['mean_membership_prob']),
+                    'min_membership_prob': float(cluster_grp.attrs['min_membership_prob']),
+                    'ambiguity_rate': float(cluster_grp.attrs['ambiguity_rate']),
+                    'status': str(cluster_grp.attrs['status']),
+                    'axis_ratio_ba': float(cluster_grp.attrs['axis_ratio_ba']) if cluster_grp.attrs['axis_ratio_ba'] >= 0 else np.nan,
+                    'axis_ratio_ca': float(cluster_grp.attrs['axis_ratio_ca']) if cluster_grp.attrs['axis_ratio_ca'] >= 0 else np.nan,
+                    'asphericity': float(cluster_grp.attrs['asphericity']) if cluster_grp.attrs['asphericity'] >= 0 else np.nan,
+                    'prolateness': float(cluster_grp.attrs['prolateness']) if cluster_grp.attrs['prolateness'] >= 0 else np.nan,
+                    'position_std': cluster_grp.attrs['position_std'],
+                }
+
+                # Load covariance if present
+                if 'cov_xyz' in cluster_grp:
+                    cluster['cov_xyz'] = cluster_grp['cov_xyz'][:]
+                else:
+                    cluster['cov_xyz'] = np.eye(3) * np.nan
+
+                # Load member data if requested
+                if load_members and 'members' in cluster_grp:
+                    members_grp = cluster_grp['members']
+                    member_data = {}
+                    for key in members_grp.keys():
+                        original_key = key.replace('_', '/')
+                        member_data[original_key] = members_grp[key][:]
+                    cluster['member_data'] = member_data
+
+                cluster_summaries.append(cluster)
+
+    # Sort by cluster_id
+    cluster_summaries.sort(key=lambda x: x['cluster_id'])
+
+    print(f"\nLoaded HDBSCAN results from {filepath}")
+    print(f"  Clusters loaded: {len(cluster_summaries)}")
+    print(f"  Total halos: {metadata.get('n_total_halos', 'N/A')}")
+
+    return cluster_summaries, assignments, metadata

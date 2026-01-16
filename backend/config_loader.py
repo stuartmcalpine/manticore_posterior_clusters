@@ -19,10 +19,19 @@ class Mode1aConfig:
     mcmc_end: int
     m200_mass_cut: float
     radius_cut: float
-    eps: float
+    # HDBSCAN parameters
+    min_cluster_size: int
     min_samples: int
-    mass_weighted_clustering: bool
-    mass_weight_power: float
+    cluster_selection_method: str
+    # Whitening parameters
+    sigma_logM: float
+    knn_k: int
+    n_mass_bins: int
+    sigma_x_min_percentile: float
+    sigma_x_max_percentile: float
+    # Stability thresholds
+    existence_prob_stable: float
+    existence_prob_tentative: float
 
 @dataclass
 class Mode1bConfig:
@@ -112,15 +121,28 @@ def load_config(config_path: str = "config.toml") -> Config:
         observer_coords=[float(x) for x in data['mode4']['observer_coords']]
     )
 
+    # Compute default min_cluster_size based on number of realizations
+    n_realizations = int(data['mode1a']['mcmc_end']) - int(data['mode1a']['mcmc_start']) + 1
+    default_min_cluster_size = max(10, round(0.15 * n_realizations))
+
     mode1a_config = Mode1aConfig(
         mcmc_start=int(data['mode1a']['mcmc_start']),
         mcmc_end=int(data['mode1a']['mcmc_end']),
         m200_mass_cut=float(data['mode1a']['m200_mass_cut']),
         radius_cut=float(data['mode1a']['radius_cut']),
-        eps=float(data['mode1a']['eps']),
-        min_samples=int(data['mode1a']['min_samples']),
-        mass_weighted_clustering=bool(data['mode1a'].get('mass_weighted_clustering', False)),
-        mass_weight_power=float(data['mode1a'].get('mass_weight_power', 0.5))
+        # HDBSCAN parameters
+        min_cluster_size=int(data['mode1a'].get('min_cluster_size', default_min_cluster_size)),
+        min_samples=int(data['mode1a'].get('min_samples', default_min_cluster_size)),
+        cluster_selection_method=str(data['mode1a'].get('cluster_selection_method', 'eom')),
+        # Whitening parameters
+        sigma_logM=float(data['mode1a'].get('sigma_logM', 0.0)),
+        knn_k=int(data['mode1a'].get('knn_k', 8)),
+        n_mass_bins=int(data['mode1a'].get('n_mass_bins', 10)),
+        sigma_x_min_percentile=float(data['mode1a'].get('sigma_x_min_percentile', 5.0)),
+        sigma_x_max_percentile=float(data['mode1a'].get('sigma_x_max_percentile', 95.0)),
+        # Stability thresholds
+        existence_prob_stable=float(data['mode1a'].get('existence_prob_stable', 0.5)),
+        existence_prob_tentative=float(data['mode1a'].get('existence_prob_tentative', 0.2))
     )
 
     mode1b_config = Mode1bConfig(

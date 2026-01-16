@@ -24,7 +24,7 @@ hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
 hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
 
 [mode1a]
-# Mode 1a: Raw DBSCAN clustering (no corrections)
+# Mode 1a: HDBSCAN posterior clustering with mass-adaptive whitening
 # First MCMC sample index to include in clustering analysis
 mcmc_start = 0
 
@@ -37,17 +37,38 @@ m200_mass_cut = 0.5e14
 # Maximum distance from observer in Mpc for halo inclusion
 radius_cut = 400.0
 
-# DBSCAN epsilon parameter in Mpc (neighborhood radius for clustering)
-eps = 1.75
+# HDBSCAN parameters
+# Minimum cluster size (~15% of N_realizations = 12 for 80 realizations)
+min_cluster_size = 12
 
-# DBSCAN minimum samples parameter (minimum halos to form a cluster)
-min_samples = 9
+# Minimum samples for core point (same as min_cluster_size for conservative clustering)
+min_samples = 12
 
-# Whether to weight halo positions by mass during clustering
-mass_weighted_clustering = false
+# Cluster selection method: 'eom' (excess of mass) or 'leaf'
+cluster_selection_method = "eom"
 
-# Power to raise mass weights to when mass_weighted_clustering is enabled (affects weighting strength)
-mass_weight_power = 0.5
+# Whitening parameters
+# Scatter in log-mass space (0 = auto-compute from data)
+sigma_logM = 0.0
+
+# Number of neighbors for k-NN scale estimation
+knn_k = 8
+
+# Number of mass bins for sigma_x(M) estimation
+n_mass_bins = 10
+
+# Percentile for clipping sigma_x floor
+sigma_x_min_percentile = 5.0
+
+# Percentile for clipping sigma_x ceiling
+sigma_x_max_percentile = 95.0
+
+# Stability classification thresholds
+# Minimum existence probability for 'stable' status
+existence_prob_stable = 0.5
+
+# Minimum existence probability for 'tentative' status (below = 'rare')
+existence_prob_tentative = 0.2
 
 [mode1b]
 # Mode 1b: Post-processing corrections (MCMC constraint + mass filtering)

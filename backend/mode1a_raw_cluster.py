@@ -1,10 +1,32 @@
+"""
+Mode 1a: HDBSCAN Posterior Clustering Pipeline
+
+Performs mass-adaptive whitened clustering on combined halo catalogs from MCMC
+posterior resimulations to identify stable halo associations.
+
+Key features:
+- Mass-dependent positional tolerance (whitening)
+- HDBSCAN for density-based clustering with soft cluster membership
+- Explicit noise handling
+- One-per-realization constraint enforcement
+- Comprehensive stability/uncertainty metrics
+"""
+
 import numpy as np
-from copy import deepcopy
+from typing import Tuple, Dict, List, Callable, Optional
 from dataclasses import dataclass
-from sklearn.cluster import DBSCAN
-from backend.config_loader import load_config
-from backend.io import ensure_output_dir, save_clusters_to_hdf5
+from scipy.interpolate import interp1d
+from sklearn.neighbors import NearestNeighbors
+
+try:
+    import hdbscan
+except ImportError:
+    raise ImportError("hdbscan package required. Install with: pip install hdbscan")
+
+from backend.config_loader import load_config, Mode1aConfig
+from backend.io import ensure_output_dir, save_hdbscan_clusters_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, combine_haloes, _compute_shape_measures
+
 
 # Temporary dataclass for compatibility with functions expecting mode1 config
 @dataclass
@@ -13,212 +35,814 @@ class Mode1Wrapper:
     mcmc_end: int
     m200_mass_cut: float
     radius_cut: float
-    eps: float
+    min_cluster_size: int
     min_samples: int
-    min_association_size: int
-    mass_outlier_threshold: float
-    use_mass_distance: bool
-    mass_weighted_clustering: bool
-    mass_weight_power: float
 
-def run_mode1a(config_path="config.toml", output_dir="output", eps=None, min_samples=None):
+
+def load_halo_data(config) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict]:
+    """Load and combine halos from all realizations.
+
+    Returns:
+        positions: (N, 3) array of x,y,z coordinates
+        masses: (N,) array of M200 masses
+        realization_ids: (N,) array of MCMC sample indices
+        halo_indices: (N,) array of original indices within each realization
+        combined_data: dict of all halo properties
     """
-    Mode 1a: Raw DBSCAN clustering (no corrections)
+    from copy import deepcopy
 
-    Performs:
-    1. Load data from MCMC samples
-    2. Combine halos into single dataset
-    3. Run DBSCAN clustering
-
-    Does NOT perform:
-    - MCMC uniqueness constraint
-    - Mass outlier filtering
-    - Re-evaluation with mass distance
-    """
-    config = load_config(config_path)
-    ensure_output_dir(output_dir)
-
-    # Override mode1a eps/min_samples if provided via command line
-    if eps is not None:
-        config.mode1a.eps = eps
-    if min_samples is not None:
-        config.mode1a.min_samples = min_samples
-
-    # Determine which parameters to use
-    clustering_eps = config.mode1a.eps
-    clustering_min_samples = config.mode1a.min_samples
-
-    print("=" * 60)
-    print("Mode 1a: Raw DBSCAN Clustering")
-    print("=" * 60)
-
-    # Create a wrapper config for compatibility with functions expecting mode1 config
+    # Create wrapper config for compatibility
     config_wrapper = deepcopy(config)
     config_wrapper.mode1 = Mode1Wrapper(
         mcmc_start=config.mode1a.mcmc_start,
         mcmc_end=config.mode1a.mcmc_end,
         m200_mass_cut=config.mode1a.m200_mass_cut,
         radius_cut=config.mode1a.radius_cut,
-        eps=clustering_eps,
-        min_samples=clustering_min_samples,
-        min_association_size=config.mode1b.min_association_size,  # Use mode1b value for output filtering
-        mass_outlier_threshold=0.0,  # Not used in mode1a
-        use_mass_distance=False,  # Not used in mode1a
-        mass_weighted_clustering=config.mode1a.mass_weighted_clustering,
-        mass_weight_power=config.mode1a.mass_weight_power
+        min_cluster_size=config.mode1a.min_cluster_size,
+        min_samples=config.mode1a.min_samples
     )
 
-    # Step 1: Load data
-    print("\nStep 1: Loading MCMC data...")
     mcmc_data = load_data_with_radius_filter(config_wrapper)
-
-    print(f"\nLoaded data from MCMC samples {config.mode1a.mcmc_start} to {config.mode1a.mcmc_end}")
-    for mcmc_id, data in mcmc_data.items():
-        print(f"  MCMC {mcmc_id}: {len(data['SO/200_crit/TotalMass'])} haloes")
-
-    # Step 2: Combine halos
-    print("\nStep 2: Combining halos from all MCMC samples...")
     combined_data, halo_provenance = combine_haloes(mcmc_data)
 
     positions = combined_data['SO/200_crit/CentreOfMass']
-    m200_masses = combined_data['SO/200_crit/TotalMass']
+    masses = combined_data['SO/200_crit/TotalMass']
+    realization_ids = np.array([p['mcmc_id'] for p in halo_provenance], dtype=np.int32)
+    halo_indices = np.array([p['original_index'] for p in halo_provenance], dtype=np.int32)
 
-    print(f"  Total combined halos: {len(positions)}")
+    return positions, masses, realization_ids, halo_indices, combined_data
 
-    # Step 3: Run DBSCAN
-    print(f"\nStep 3: Running DBSCAN (eps={clustering_eps} Mpc, min_samples={clustering_min_samples})...")
 
-    # Optional: Weight positions by mass for clustering
-    if config.mode1a.mass_weighted_clustering:
-        print(f"  Using mass-weighted clustering (power={config.mode1a.mass_weight_power})")
-        log_m200_masses = np.log10(m200_masses)
-        log_m200_mass_weights = (log_m200_masses - np.min(log_m200_masses)) + 1  # Ensure positive weights
-        m200_mass_weights = log_m200_mass_weights ** config.mode1a.mass_weight_power
-        weighted_positions = positions * m200_mass_weights.reshape(-1, 1)
-        clustering_input = weighted_positions
-    else:
-        clustering_input = positions
+def estimate_sigma_x_of_mass(
+    positions: np.ndarray,
+    log_masses: np.ndarray,
+    k: int = 8,
+    n_bins: int = 10,
+    min_bin_count: int = 30,
+    min_percentile: float = 5.0,
+    max_percentile: float = 95.0
+) -> Tuple[Callable[[np.ndarray], np.ndarray], Dict]:
+    """Estimate mass-dependent positional scatter scale σx(M).
 
-    clustering = DBSCAN(eps=clustering_eps, min_samples=clustering_min_samples)
-    cluster_labels = clustering.fit_predict(clustering_input)
+    Algorithm:
+    1. Bin halos by log10(mass)
+    2. For each bin, compute median k-NN distance in 3D position
+    3. Smooth across bins via linear interpolation
+    4. Clip to min/max percentiles
 
-    # Statistics
-    n_total = len(cluster_labels)
-    n_noise = np.sum(cluster_labels == -1)
-    n_clustered = n_total - n_noise
-    n_clusters = len(np.unique(cluster_labels[cluster_labels != -1]))
+    Args:
+        positions: (N, 3) array of x,y,z coordinates
+        log_masses: (N,) array of log10(M200) masses
+        k: number of neighbors for k-NN scale estimation
+        n_bins: number of mass bins
+        min_bin_count: minimum halos per bin (bins with fewer are merged)
+        min_percentile: percentile for clipping σx floor
+        max_percentile: percentile for clipping σx ceiling
 
-    print(f"\n  Total halos: {n_total}")
-    print(f"  Clustered halos: {n_clustered} ({100*n_clustered/n_total:.1f}%)")
-    print(f"  Noise halos: {n_noise} ({100*n_noise/n_total:.1f}%)")
-    print(f"  Number of clusters: {n_clusters}")
+    Returns:
+        sigma_x_func: Interpolation function: log_mass -> sigma_x
+        diagnostics: Dict with binning info for debugging
+    """
+    n_halos = len(positions)
 
-    # Show cluster size distribution
-    if n_clusters > 0:
-        cluster_sizes = []
-        for cluster_id in np.unique(cluster_labels):
-            if cluster_id != -1:
-                cluster_sizes.append(np.sum(cluster_labels == cluster_id))
-        cluster_sizes = sorted(cluster_sizes, reverse=True)
+    # Compute k-NN distances for all halos
+    nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto')  # +1 because first neighbor is self
+    nn.fit(positions)
+    distances, _ = nn.kneighbors(positions)
+    knn_distances = distances[:, k]  # k-th neighbor distance (0-indexed, skip self)
 
-        print(f"\n  Largest 10 clusters: {cluster_sizes[:10]}")
-        print(f"  Smallest cluster: {cluster_sizes[-1]}")
-        print(f"  Mean cluster size: {np.mean(cluster_sizes):.1f}")
-        print(f"  Median cluster size: {np.median(cluster_sizes):.1f}")
+    # Create mass bins
+    log_mass_min, log_mass_max = np.min(log_masses), np.max(log_masses)
+    bin_edges = np.linspace(log_mass_min, log_mass_max, n_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
-    # Build stable_haloes structure from raw DBSCAN results
-    print("\nComputing cluster statistics...")
-    stable_haloes = []
+    # Compute median k-NN distance per bin
+    bin_sigmas = []
+    bin_counts = []
+    valid_bin_centers = []
 
-    for cluster_id in np.unique(cluster_labels):
-        if cluster_id == -1:
+    for i in range(n_bins):
+        bin_mask = (log_masses >= bin_edges[i]) & (log_masses < bin_edges[i + 1])
+        # Include right edge for last bin
+        if i == n_bins - 1:
+            bin_mask = (log_masses >= bin_edges[i]) & (log_masses <= bin_edges[i + 1])
+
+        count = np.sum(bin_mask)
+        bin_counts.append(count)
+
+        if count >= min_bin_count:
+            bin_sigmas.append(np.median(knn_distances[bin_mask]))
+            valid_bin_centers.append(bin_centers[i])
+        elif count > 0:
+            # Underpopulated bin - will be interpolated
+            bin_sigmas.append(np.median(knn_distances[bin_mask]))
+            valid_bin_centers.append(bin_centers[i])
+
+    bin_sigmas = np.array(bin_sigmas)
+    valid_bin_centers = np.array(valid_bin_centers)
+
+    # Handle edge case: not enough valid bins
+    if len(bin_sigmas) < 2:
+        # Fall back to global median
+        global_sigma = np.median(knn_distances)
+        sigma_x_func = lambda log_m: np.full_like(log_m, global_sigma, dtype=float)
+        diagnostics = {
+            'method': 'global_fallback',
+            'global_sigma': global_sigma,
+            'n_halos': n_halos
+        }
+        return sigma_x_func, diagnostics
+
+    # Clip to percentiles
+    sigma_floor = np.percentile(bin_sigmas, min_percentile)
+    sigma_ceiling = np.percentile(bin_sigmas, max_percentile)
+    bin_sigmas_clipped = np.clip(bin_sigmas, sigma_floor, sigma_ceiling)
+
+    # Create piecewise-linear interpolator with extrapolation
+    sigma_x_interp = interp1d(
+        valid_bin_centers,
+        bin_sigmas_clipped,
+        kind='linear',
+        bounds_error=False,
+        fill_value=(bin_sigmas_clipped[0], bin_sigmas_clipped[-1])  # Extrapolate with edge values
+    )
+
+    def sigma_x_func(log_m: np.ndarray) -> np.ndarray:
+        log_m = np.atleast_1d(log_m)
+        return sigma_x_interp(log_m)
+
+    diagnostics = {
+        'method': 'binned_interpolation',
+        'n_bins': n_bins,
+        'bin_centers': valid_bin_centers,
+        'bin_sigmas': bin_sigmas_clipped,
+        'bin_counts': bin_counts,
+        'sigma_floor': sigma_floor,
+        'sigma_ceiling': sigma_ceiling,
+        'k': k
+    }
+
+    return sigma_x_func, diagnostics
+
+
+def compute_sigma_logM(log_masses: np.ndarray) -> float:
+    """Compute scatter in log-mass space.
+
+    Uses robust IQR-based estimate of standard deviation.
+    """
+    iqr = np.percentile(log_masses, 75) - np.percentile(log_masses, 25)
+    # IQR to sigma conversion factor for normal distribution
+    sigma_estimate = iqr / 1.349
+    return max(sigma_estimate, 0.1)  # Floor at 0.1 dex
+
+
+def build_whitened_features(
+    positions: np.ndarray,
+    log_masses: np.ndarray,
+    sigma_x_func: Callable,
+    sigma_logM: float
+) -> np.ndarray:
+    """Build whitened 4D feature vectors for HDBSCAN.
+
+    Features: [x/σx(M), y/σx(M), z/σx(M), logM/σ_logM]
+
+    Args:
+        positions: (N, 3) array of x,y,z coordinates
+        log_masses: (N,) array of log10(M200) masses
+        sigma_x_func: function mapping log_mass to positional scale
+        sigma_logM: scatter in log-mass space
+
+    Returns:
+        (N, 4) array of whitened features
+    """
+    n_halos = len(positions)
+
+    # Get mass-dependent positional scale
+    sigma_x = sigma_x_func(log_masses)
+
+    # Avoid division by zero
+    sigma_x = np.maximum(sigma_x, 1e-6)
+    sigma_logM = max(sigma_logM, 1e-6)
+
+    # Whiten positions
+    whitened_positions = positions / sigma_x[:, np.newaxis]
+
+    # Whiten log-mass
+    whitened_logM = log_masses / sigma_logM
+
+    # Combine into 4D features
+    features = np.column_stack([whitened_positions, whitened_logM])
+
+    return features
+
+
+def run_hdbscan(
+    features: np.ndarray,
+    min_cluster_size: int,
+    min_samples: int,
+    cluster_selection_method: str = 'eom'
+) -> Tuple[np.ndarray, np.ndarray, 'hdbscan.HDBSCAN']:
+    """Run HDBSCAN clustering on whitened features.
+
+    Args:
+        features: (N, 4) whitened feature vectors
+        min_cluster_size: minimum cluster size for HDBSCAN
+        min_samples: minimum samples for core point
+        cluster_selection_method: 'eom' (excess of mass) or 'leaf'
+
+    Returns:
+        labels: (N,) cluster labels (-1 for noise)
+        probabilities: (N,) membership probabilities
+        clusterer: fitted HDBSCAN object (for stability metrics)
+    """
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        cluster_selection_method=cluster_selection_method,
+        metric='euclidean',
+        prediction_data=True
+    )
+
+    labels = clusterer.fit_predict(features)
+    probabilities = clusterer.probabilities_
+
+    return labels, probabilities, clusterer
+
+
+def enforce_one_per_realization(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    positions: np.ndarray,
+    realization_ids: np.ndarray,
+    n_realizations: int
+) -> Tuple[np.ndarray, np.ndarray, Dict[int, float]]:
+    """Enforce ≤1 halo per realization per cluster.
+
+    Selection criteria (in order):
+    1. Highest membership probability
+    2. Tie-break: closest to cluster center
+
+    Args:
+        labels: (N,) cluster labels
+        probabilities: (N,) membership probabilities
+        positions: (N, 3) halo positions
+        realization_ids: (N,) realization IDs
+        n_realizations: total number of realizations
+
+    Returns:
+        labels: updated labels (rejected halos become -1)
+        dropped_mask: (N,) bool array of dropped halos
+        ambiguity_rates: {cluster_id: fraction of realizations with conflicts}
+    """
+    labels = labels.copy()
+    dropped_mask = np.zeros(len(labels), dtype=bool)
+    ambiguity_rates = {}
+
+    unique_clusters = np.unique(labels)
+
+    for cluster_id in unique_clusters:
+        if cluster_id == -1:  # Skip noise
             continue
 
-        cluster_mask = cluster_labels == cluster_id
+        cluster_mask = labels == cluster_id
+        cluster_indices = np.where(cluster_mask)[0]
         cluster_positions = positions[cluster_mask]
-        cluster_m200_masses = m200_masses[cluster_mask]
-        cluster_provenance = [halo_provenance[i] for i in range(len(halo_provenance)) if cluster_mask[i]]
+        cluster_probs = probabilities[cluster_mask]
+        cluster_realization_ids = realization_ids[cluster_mask]
 
-        cluster_size = len(cluster_positions)
-        mean_position = np.mean(cluster_positions, axis=0)
-        mean_m200_mass = np.mean(cluster_m200_masses)
-        position_std = np.std(cluster_positions, axis=0)
-        m200_mass_std = np.std(cluster_m200_masses)
-        log10_m200_mass_std = np.std(np.log10(cluster_m200_masses))
+        # Compute cluster center
+        cluster_center = np.median(cluster_positions, axis=0)
 
-        # Calculate mean subhalo mass and M500
-        cluster_subhalo_masses = combined_data['BoundSubhalo/TotalMass'][cluster_mask]
+        # Track conflicts
+        n_conflicts = 0
+        unique_realizations = np.unique(cluster_realization_ids)
+
+        for real_id in unique_realizations:
+            real_mask = cluster_realization_ids == real_id
+            real_indices = cluster_indices[real_mask]
+
+            if len(real_indices) <= 1:
+                continue
+
+            # Multiple halos from same realization - need to select one
+            n_conflicts += 1
+
+            real_probs = cluster_probs[real_mask]
+            real_positions = cluster_positions[real_mask]
+
+            # Primary: highest probability
+            max_prob = np.max(real_probs)
+            max_prob_mask = real_probs == max_prob
+
+            if np.sum(max_prob_mask) == 1:
+                # Clear winner by probability
+                keep_idx = np.argmax(real_probs)
+            else:
+                # Tie-break: closest to center among max-probability halos
+                tied_positions = real_positions[max_prob_mask]
+                tied_indices = np.where(max_prob_mask)[0]
+                distances = np.linalg.norm(tied_positions - cluster_center, axis=1)
+                keep_idx = tied_indices[np.argmin(distances)]
+
+            # Mark non-selected as noise
+            for i, global_idx in enumerate(real_indices):
+                if i != keep_idx:
+                    labels[global_idx] = -1
+                    dropped_mask[global_idx] = True
+
+        # Compute ambiguity rate
+        n_realizations_present = len(unique_realizations)
+        ambiguity_rates[cluster_id] = n_conflicts / n_realizations_present if n_realizations_present > 0 else 0.0
+
+    return labels, dropped_mask, ambiguity_rates
+
+
+def get_hdbscan_stability(clusterer: 'hdbscan.HDBSCAN', cluster_id: int) -> float:
+    """Extract HDBSCAN stability score for a cluster.
+
+    The stability score measures how persistent a cluster is across
+    different density thresholds in the condensed tree.
+    """
+    try:
+        # Get cluster persistence from condensed tree
+        cluster_tree = clusterer.condensed_tree_.to_pandas()
+        cluster_data = cluster_tree[cluster_tree['child'] == cluster_id]
+        if len(cluster_data) > 0:
+            return float(cluster_data['lambda_val'].max())
+    except Exception:
+        pass
+    return np.nan
+
+
+def summarize_clusters(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    positions: np.ndarray,
+    masses: np.ndarray,
+    realization_ids: np.ndarray,
+    combined_data: Dict,
+    clusterer: 'hdbscan.HDBSCAN',
+    ambiguity_rates: Dict[int, float],
+    n_realizations: int,
+    existence_prob_stable: float,
+    existence_prob_tentative: float
+) -> List[Dict]:
+    """Compute comprehensive cluster summaries.
+
+    Per-cluster metrics:
+    - cluster_id (deterministic: sorted by existence_prob desc, stability desc)
+    - existence_prob = n_realizations_present / N_realizations
+    - n_realizations_present
+    - n_members_total
+    - center_x, center_y, center_z (median position)
+    - cov_xyz (3x3 position covariance)
+    - center_logM (median log mass)
+    - var_logM
+    - hdbscan_stability (from condensed tree)
+    - mean_membership_prob, min_membership_prob
+    - ambiguity_rate
+    - status ('stable', 'tentative', 'rare')
+    """
+    log_masses = np.log10(masses)
+    cluster_summaries = []
+
+    unique_clusters = np.unique(labels)
+    unique_clusters = unique_clusters[unique_clusters != -1]  # Exclude noise
+
+    for cluster_id in unique_clusters:
+        cluster_mask = labels == cluster_id
+        cluster_positions = positions[cluster_mask]
+        cluster_masses = masses[cluster_mask]
+        cluster_log_masses = log_masses[cluster_mask]
+        cluster_probs = probabilities[cluster_mask]
+        cluster_realization_ids = realization_ids[cluster_mask]
+
+        n_members = np.sum(cluster_mask)
+        n_realizations_present = len(np.unique(cluster_realization_ids))
+        existence_prob = n_realizations_present / n_realizations
+
+        # Position statistics
+        center_xyz = np.median(cluster_positions, axis=0)
+        cov_xyz = np.cov(cluster_positions.T) if n_members > 1 else np.eye(3) * np.nan
+
+        # Mass statistics
+        center_logM = np.median(cluster_log_masses)
+        var_logM = np.var(cluster_log_masses) if n_members > 1 else np.nan
+        mean_mass = np.mean(cluster_masses)
+        mass_std = np.std(cluster_masses) if n_members > 1 else np.nan
+        log_mass_std = np.std(cluster_log_masses) if n_members > 1 else np.nan
+
+        # Membership probability statistics
+        mean_prob = np.mean(cluster_probs)
+        min_prob = np.min(cluster_probs)
+
+        # HDBSCAN stability
+        hdbscan_stability = get_hdbscan_stability(clusterer, cluster_id)
+
+        # Ambiguity rate
+        ambiguity_rate = ambiguity_rates.get(cluster_id, 0.0)
+
+        # Status classification
+        if existence_prob >= existence_prob_stable:
+            status = 'stable'
+        elif existence_prob >= existence_prob_tentative:
+            status = 'tentative'
+        else:
+            status = 'rare'
+
+        # Shape measures
+        shape_measures = _compute_shape_measures(cluster_positions)
+
+        # M500 statistics
         cluster_m500 = combined_data['SO/500_crit/TotalMass'][cluster_mask]
-
-        # Handle NaN values
-        valid_subhalo_masses = cluster_subhalo_masses[~np.isnan(cluster_subhalo_masses)]
         valid_m500 = cluster_m500[~np.isnan(cluster_m500)]
-
-        mean_subhalo_mass = np.mean(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
         mean_m500 = np.mean(valid_m500) if len(valid_m500) > 0 else np.nan
-        subhalo_mass_std = np.std(valid_subhalo_masses) if len(valid_subhalo_masses) > 0 else np.nan
         m500_std = np.std(valid_m500) if len(valid_m500) > 0 else np.nan
         log10_m500_std = np.std(np.log10(valid_m500)) if len(valid_m500) > 0 else np.nan
 
-        # Compute shape measures
-        shape_measures = _compute_shape_measures(cluster_positions)
+        # Subhalo mass statistics
+        cluster_subhalo_masses = combined_data['BoundSubhalo/TotalMass'][cluster_mask]
+        valid_subhalo = cluster_subhalo_masses[~np.isnan(cluster_subhalo_masses)]
+        mean_subhalo_mass = np.mean(valid_subhalo) if len(valid_subhalo) > 0 else np.nan
+        subhalo_mass_std = np.std(valid_subhalo) if len(valid_subhalo) > 0 else np.nan
 
-        # Extract all member data for this cluster
+        # Extract member data
         member_data = {}
         for key, data in combined_data.items():
             member_data[key] = data[cluster_mask]
 
-        stable_haloes.append({
-            'cluster_id': cluster_id,
-            'cluster_size': cluster_size,
-            'mean_position': mean_position,
-            'mean_m200_mass': mean_m200_mass,
-            'mean_subhalo_mass': mean_subhalo_mass,
+        cluster_summaries.append({
+            'original_cluster_id': int(cluster_id),  # Original HDBSCAN ID
+            'cluster_id': None,  # Will be assigned after sorting
+            'existence_prob': existence_prob,
+            'n_realizations_present': n_realizations_present,
+            'n_members': n_members,
+            'center_xyz': center_xyz,
+            'cov_xyz': cov_xyz,
+            'center_logM': center_logM,
+            'var_logM': var_logM,
+            'mean_m200_mass': mean_mass,
+            'm200_mass_std': mass_std,
+            'log10_m200_mass_std': log_mass_std,
             'mean_m500': mean_m500,
-            'position_std': position_std,
-            'm200_mass_std': m200_mass_std,
-            'subhalo_mass_std': subhalo_mass_std,
             'm500_std': m500_std,
-            'members': cluster_provenance,
-            'member_data': member_data,
-            'log10_m200_mass_std': log10_m200_mass_std,
             'log10_m500_std': log10_m500_std,
+            'mean_subhalo_mass': mean_subhalo_mass,
+            'subhalo_mass_std': subhalo_mass_std,
+            'hdbscan_stability': hdbscan_stability,
+            'mean_membership_prob': mean_prob,
+            'min_membership_prob': min_prob,
+            'ambiguity_rate': ambiguity_rate,
+            'status': status,
             'axis_ratio_ba': shape_measures['axis_ratio_ba'],
             'axis_ratio_ca': shape_measures['axis_ratio_ca'],
             'asphericity': shape_measures['asphericity'],
             'prolateness': shape_measures['prolateness'],
+            'position_std': np.std(cluster_positions, axis=0),
+            'member_data': member_data,
+            'member_indices': np.where(cluster_mask)[0],
+            'member_probs': cluster_probs.copy()
         })
 
-    print(f"  Computed statistics for {len(stable_haloes)} clusters")
+    # Sort by existence_prob (desc), then hdbscan_stability (desc)
+    cluster_summaries.sort(
+        key=lambda x: (-x['existence_prob'], -x['hdbscan_stability'] if not np.isnan(x['hdbscan_stability']) else 0)
+    )
 
-    # Sort and display top clusters
-    sorted_haloes = sorted(stable_haloes, key=lambda x: x['cluster_size'], reverse=True)
+    # Assign deterministic cluster IDs
+    for i, summary in enumerate(cluster_summaries):
+        summary['cluster_id'] = i
 
-    print("\nTop 10 raw clusters by size (no corrections applied):")
-    for i, halo in enumerate(sorted_haloes[:10]):
-        print(f"\n  Cluster {i}:")
-        print(f"    Cluster size: {halo['cluster_size']}")
-        print(f"    M200 mass mean: {halo['mean_m200_mass']:.2e} ± {halo['m200_mass_std']:.2e}")
-        if not np.isnan(halo['mean_subhalo_mass']):
-            print(f"    Subhalo mass mean: {halo['mean_subhalo_mass']:.2e} ± {halo['subhalo_mass_std']:.2e}")
-        if not np.isnan(halo['mean_m500']):
-            print(f"    M500 mass mean: {halo['mean_m500']:.2e} ± {halo['m500_std']:.2e}")
-        print(f"    Log10 M200 std: {halo['log10_m200_mass_std']:.3f}")
-        print(f"    Position mean: [{halo['mean_position'][0]:.1f}, {halo['mean_position'][1]:.1f}, {halo['mean_position'][2]:.1f}]")
-        print(f"    Position std: [{halo['position_std'][0]:.1f}, {halo['position_std'][1]:.1f}, {halo['position_std'][2]:.1f}]")
+    return cluster_summaries
 
-    # Save raw DBSCAN clusters (same format as mode1b output, but without corrections)
-    print("\nSaving raw DBSCAN clusters to HDF5...")
-    fname = f"raw_clusters_eps_{str(clustering_eps).replace('.','p')}_min_samples_{clustering_min_samples}.h5"
-    save_clusters_to_hdf5(
-        stable_haloes, positions, m200_masses, halo_provenance, cluster_labels,
-        config_wrapper, output_dir, filename=fname
+
+def run_mode1a(config_path="config.toml", output_dir="output",
+               min_cluster_size=None, min_samples=None):
+    """
+    Mode 1a: HDBSCAN Posterior Clustering
+
+    Performs:
+    1. Load data from MCMC samples
+    2. Estimate mass-dependent positional scale σx(M)
+    3. Build whitened 4D features
+    4. Run HDBSCAN clustering
+    5. Enforce one-per-realization constraint
+    6. Compute cluster summaries
+    7. Save results to HDF5
+
+    Args:
+        config_path: Path to config.toml
+        output_dir: Output directory for results
+        min_cluster_size: Override for HDBSCAN min_cluster_size
+        min_samples: Override for HDBSCAN min_samples
+    """
+    config = load_config(config_path)
+    ensure_output_dir(output_dir)
+
+    # Override parameters if provided
+    if min_cluster_size is not None:
+        config.mode1a.min_cluster_size = min_cluster_size
+    if min_samples is not None:
+        config.mode1a.min_samples = min_samples
+
+    n_realizations = config.mode1a.mcmc_end - config.mode1a.mcmc_start + 1
+
+    print("=" * 60)
+    print("Mode 1a: HDBSCAN Posterior Clustering")
+    print("=" * 60)
+
+    # Step 1: Load data
+    print("\nStep 1: Loading MCMC data...")
+    positions, masses, realization_ids, halo_indices, combined_data = load_halo_data(config)
+
+    n_total_halos = len(positions)
+    print(f"  Total halos loaded: {n_total_halos}")
+    print(f"  Realizations: {config.mode1a.mcmc_start} to {config.mode1a.mcmc_end} ({n_realizations} total)")
+
+    # Filter non-positive masses
+    valid_mass_mask = masses > 0
+    if not np.all(valid_mass_mask):
+        n_invalid = np.sum(~valid_mass_mask)
+        print(f"  Warning: Filtering {n_invalid} halos with non-positive masses")
+        positions = positions[valid_mass_mask]
+        masses = masses[valid_mass_mask]
+        realization_ids = realization_ids[valid_mass_mask]
+        halo_indices = halo_indices[valid_mass_mask]
+        for key in combined_data:
+            if isinstance(combined_data[key], np.ndarray) and len(combined_data[key]) == n_total_halos:
+                combined_data[key] = combined_data[key][valid_mass_mask]
+        n_total_halos = len(positions)
+
+    log_masses = np.log10(masses)
+
+    # Step 2: Estimate mass-dependent positional scale
+    print("\nStep 2: Estimating mass-dependent positional scale σx(M)...")
+    sigma_x_func, sigma_diagnostics = estimate_sigma_x_of_mass(
+        positions, log_masses,
+        k=config.mode1a.knn_k,
+        n_bins=config.mode1a.n_mass_bins,
+        min_percentile=config.mode1a.sigma_x_min_percentile,
+        max_percentile=config.mode1a.sigma_x_max_percentile
+    )
+    print(f"  Method: {sigma_diagnostics['method']}")
+    if 'bin_sigmas' in sigma_diagnostics:
+        print(f"  σx range: {np.min(sigma_diagnostics['bin_sigmas']):.2f} - {np.max(sigma_diagnostics['bin_sigmas']):.2f} Mpc")
+
+    # Step 3: Compute σ_logM
+    print("\nStep 3: Computing log-mass scatter σ_logM...")
+    if config.mode1a.sigma_logM > 0:
+        sigma_logM = config.mode1a.sigma_logM
+        print(f"  Using configured σ_logM: {sigma_logM:.3f} dex")
+    else:
+        sigma_logM = compute_sigma_logM(log_masses)
+        print(f"  Auto-computed σ_logM: {sigma_logM:.3f} dex")
+
+    # Step 4: Build whitened features
+    print("\nStep 4: Building whitened 4D features...")
+    features = build_whitened_features(positions, log_masses, sigma_x_func, sigma_logM)
+    print(f"  Feature shape: {features.shape}")
+
+    # Step 5: Run HDBSCAN
+    print(f"\nStep 5: Running HDBSCAN (min_cluster_size={config.mode1a.min_cluster_size}, "
+          f"min_samples={config.mode1a.min_samples}, method='{config.mode1a.cluster_selection_method}')...")
+    labels, probabilities, clusterer = run_hdbscan(
+        features,
+        config.mode1a.min_cluster_size,
+        config.mode1a.min_samples,
+        config.mode1a.cluster_selection_method
+    )
+
+    n_clusters_raw = len(np.unique(labels[labels != -1]))
+    n_noise_raw = np.sum(labels == -1)
+    n_clustered_raw = n_total_halos - n_noise_raw
+
+    print(f"  Raw clustering results:")
+    print(f"    Clusters found: {n_clusters_raw}")
+    print(f"    Clustered halos: {n_clustered_raw} ({100*n_clustered_raw/n_total_halos:.1f}%)")
+    print(f"    Noise halos: {n_noise_raw} ({100*n_noise_raw/n_total_halos:.1f}%)")
+
+    # Step 6: Enforce one-per-realization constraint
+    print("\nStep 6: Enforcing one-per-realization constraint...")
+    labels, dropped_mask, ambiguity_rates = enforce_one_per_realization(
+        labels, probabilities, positions, realization_ids, n_realizations
+    )
+
+    n_dropped = np.sum(dropped_mask)
+    n_clusters_final = len(np.unique(labels[labels != -1]))
+    n_noise_final = np.sum(labels == -1)
+    n_clustered_final = n_total_halos - n_noise_final
+
+    print(f"  Halos dropped by constraint: {n_dropped}")
+    print(f"  Final clustered halos: {n_clustered_final} ({100*n_clustered_final/n_total_halos:.1f}%)")
+    print(f"  Final noise halos: {n_noise_final} ({100*n_noise_final/n_total_halos:.1f}%)")
+    if ambiguity_rates:
+        mean_ambiguity = np.mean(list(ambiguity_rates.values()))
+        print(f"  Mean ambiguity rate: {mean_ambiguity:.1%}")
+
+    # Step 7: Summarize clusters
+    print("\nStep 7: Computing cluster summaries...")
+    cluster_summaries = summarize_clusters(
+        labels, probabilities, positions, masses, realization_ids, combined_data,
+        clusterer, ambiguity_rates, n_realizations,
+        config.mode1a.existence_prob_stable,
+        config.mode1a.existence_prob_tentative
+    )
+
+    n_stable = sum(1 for c in cluster_summaries if c['status'] == 'stable')
+    n_tentative = sum(1 for c in cluster_summaries if c['status'] == 'tentative')
+    n_rare = sum(1 for c in cluster_summaries if c['status'] == 'rare')
+
+    print(f"  Total clusters: {len(cluster_summaries)}")
+    print(f"  Stable (existence_prob >= {config.mode1a.existence_prob_stable:.0%}): {n_stable}")
+    print(f"  Tentative (>= {config.mode1a.existence_prob_tentative:.0%}): {n_tentative}")
+    print(f"  Rare (< {config.mode1a.existence_prob_tentative:.0%}): {n_rare}")
+
+    # Show top clusters
+    print("\nTop 10 clusters by existence probability:")
+    for i, cluster in enumerate(cluster_summaries[:10]):
+        print(f"\n  Cluster {cluster['cluster_id']}:")
+        print(f"    Existence prob: {cluster['existence_prob']:.1%} ({cluster['n_realizations_present']}/{n_realizations})")
+        print(f"    Status: {cluster['status']}")
+        print(f"    Members: {cluster['n_members']}")
+        print(f"    M200 mean: {cluster['mean_m200_mass']:.2e} Msol")
+        print(f"    Log M200 std: {cluster['log10_m200_mass_std']:.3f} dex")
+        print(f"    Center: [{cluster['center_xyz'][0]:.1f}, {cluster['center_xyz'][1]:.1f}, {cluster['center_xyz'][2]:.1f}]")
+        print(f"    Mean membership prob: {cluster['mean_membership_prob']:.3f}")
+        print(f"    Ambiguity rate: {cluster['ambiguity_rate']:.1%}")
+
+    # Step 8: Save results
+    print("\nStep 8: Saving results to HDF5...")
+    filename = (f"hdbscan_clusters_mcs_{config.mode1a.min_cluster_size}_"
+                f"ms_{config.mode1a.min_samples}.h5")
+
+    save_hdbscan_clusters_to_hdf5(
+        cluster_summaries=cluster_summaries,
+        positions=positions,
+        masses=masses,
+        realization_ids=realization_ids,
+        labels=labels,
+        probabilities=probabilities,
+        dropped_mask=dropped_mask,
+        config=config,
+        output_dir=output_dir,
+        filename=filename,
+        sigma_diagnostics=sigma_diagnostics,
+        sigma_logM=sigma_logM
     )
 
     print("\n" + "=" * 60)
     print("Mode 1a complete!")
-    print(f"Output file: {output_dir}/{fname}")
+    print(f"Output file: {output_dir}/{filename}")
     print("=" * 60)
 
+    return cluster_summaries, labels, probabilities
+
+
+def run_synthetic_test():
+    """Run synthetic test to verify pipeline recovery."""
+    print("=" * 60)
+    print("Running Synthetic Test")
+    print("=" * 60)
+
+    np.random.seed(42)
+
+    # Generate synthetic data
+    n_realizations = 80
+    n_true_halos = 5
+    clutter_per_realization = 10
+
+    # True halo properties
+    true_positions = np.array([
+        [100, 100, 100],
+        [200, 200, 200],
+        [300, 150, 250],
+        [400, 300, 100],
+        [250, 350, 300]
+    ], dtype=float)
+
+    true_masses = np.array([1e15, 5e14, 2e14, 8e14, 3e14])
+
+    # Generate realizations
+    all_positions = []
+    all_masses = []
+    all_realization_ids = []
+
+    for real_id in range(n_realizations):
+        # Add true halos with scatter
+        for i in range(n_true_halos):
+            # Mass-dependent positional scatter
+            log_mass = np.log10(true_masses[i])
+            pos_scatter = 5.0 * (15 - log_mass)  # Higher scatter for lower mass
+            pos_scatter = max(pos_scatter, 2.0)
+
+            pos = true_positions[i] + np.random.normal(0, pos_scatter, 3)
+            mass = true_masses[i] * 10**(np.random.normal(0, 0.1))  # 0.1 dex scatter
+
+            all_positions.append(pos)
+            all_masses.append(mass)
+            all_realization_ids.append(real_id)
+
+        # Add clutter
+        for _ in range(clutter_per_realization):
+            pos = np.random.uniform(50, 450, 3)
+            mass = 10**(np.random.uniform(14.0, 15.5))
+            all_positions.append(pos)
+            all_masses.append(mass)
+            all_realization_ids.append(real_id)
+
+    positions = np.array(all_positions)
+    masses = np.array(all_masses)
+    realization_ids = np.array(all_realization_ids)
+    log_masses = np.log10(masses)
+
+    print(f"\nSynthetic data:")
+    print(f"  Total halos: {len(positions)}")
+    print(f"  Realizations: {n_realizations}")
+    print(f"  True halos per realization: {n_true_halos}")
+    print(f"  Clutter per realization: {clutter_per_realization}")
+
+    # Run pipeline
+    print("\nRunning HDBSCAN pipeline...")
+
+    # Estimate sigma_x
+    sigma_x_func, _ = estimate_sigma_x_of_mass(
+        positions, log_masses, k=8, n_bins=10
+    )
+    sigma_logM = compute_sigma_logM(log_masses)
+
+    # Build features
+    features = build_whitened_features(positions, log_masses, sigma_x_func, sigma_logM)
+
+    # Run HDBSCAN
+    min_cluster_size = max(10, round(0.15 * n_realizations))
+    labels, probabilities, clusterer = run_hdbscan(features, min_cluster_size, min_cluster_size, 'eom')
+
+    # Enforce constraint
+    labels, dropped_mask, ambiguity_rates = enforce_one_per_realization(
+        labels, probabilities, positions, realization_ids, n_realizations
+    )
+
+    # Check recovery
+    print("\nRecovery analysis:")
+    unique_clusters = np.unique(labels[labels != -1])
+
+    for cluster_id in unique_clusters:
+        mask = labels == cluster_id
+        cluster_reals = np.unique(realization_ids[mask])
+        existence_prob = len(cluster_reals) / n_realizations
+
+        cluster_positions = positions[mask]
+        center = np.median(cluster_positions, axis=0)
+
+        # Find closest true halo
+        distances_to_true = [np.linalg.norm(center - tp) for tp in true_positions]
+        closest_true = np.argmin(distances_to_true)
+        closest_distance = distances_to_true[closest_true]
+
+        print(f"\n  Cluster {cluster_id}:")
+        print(f"    Existence prob: {existence_prob:.1%}")
+        print(f"    Center: {center}")
+        print(f"    Closest true halo: {closest_true} (distance: {closest_distance:.1f})")
+        print(f"    True position: {true_positions[closest_true]}")
+
+    # Count high-existence-prob clusters
+    n_recovered = 0
+    for cluster_id in unique_clusters:
+        mask = labels == cluster_id
+        cluster_reals = np.unique(realization_ids[mask])
+        if len(cluster_reals) / n_realizations >= 0.5:
+            n_recovered += 1
+
+    print(f"\nSummary:")
+    print(f"  True halos: {n_true_halos}")
+    print(f"  Recovered with existence_prob >= 50%: {n_recovered}")
+    print(f"  Recovery rate: {n_recovered/n_true_halos:.1%}")
+
+    return n_recovered == n_true_halos
+
+
 if __name__ == '__main__':
-    run_mode1a()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--synthetic-test", action="store_true",
+                        help="Run synthetic test instead of real data")
+    parser.add_argument("--config", default="config.toml",
+                        help="Path to config file")
+    parser.add_argument("--output", default="output",
+                        help="Output directory")
+    parser.add_argument("--min-cluster-size", type=int, default=None,
+                        help="Override HDBSCAN min_cluster_size")
+    parser.add_argument("--min-samples", type=int, default=None,
+                        help="Override HDBSCAN min_samples")
+    args = parser.parse_args()
+
+    if args.synthetic_test:
+        success = run_synthetic_test()
+        exit(0 if success else 1)
+    else:
+        run_mode1a(
+            config_path=args.config,
+            output_dir=args.output,
+            min_cluster_size=args.min_cluster_size,
+            min_samples=args.min_samples
+        )
