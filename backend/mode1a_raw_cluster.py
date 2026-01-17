@@ -1,11 +1,12 @@
 """
 Mode 1a: HDBSCAN Posterior Clustering Pipeline
 
-Performs mass-adaptive whitened clustering on combined halo catalogs from MCMC
-posterior resimulations to identify stable halo associations.
+Performs whitened clustering on combined halo catalogs from MCMC posterior
+resimulations to identify stable halo associations.
 
 Key features:
-- Mass-dependent positional tolerance (whitening)
+- Fixed positional scale σx based on inference voxel size (4 Mpc default)
+- 4D whitened features: [x/σx, y/σx, z/σx, logM/σ_logM]
 - HDBSCAN for density-based clustering with soft cluster membership
 - Explicit noise handling
 - One-per-realization constraint enforcement
@@ -13,10 +14,8 @@ Key features:
 """
 
 import numpy as np
-from typing import Tuple, Dict, List, Callable, Optional
+from typing import Tuple, Dict, List, Optional
 from dataclasses import dataclass
-from scipy.interpolate import interp1d
-from sklearn.neighbors import NearestNeighbors
 
 try:
     import hdbscan
@@ -73,118 +72,6 @@ def load_halo_data(config) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarr
     return positions, masses, realization_ids, halo_indices, combined_data
 
 
-def estimate_sigma_x_of_mass(
-    positions: np.ndarray,
-    log_masses: np.ndarray,
-    k: int = 8,
-    n_bins: int = 10,
-    min_bin_count: int = 30,
-    min_percentile: float = 5.0,
-    max_percentile: float = 95.0
-) -> Tuple[Callable[[np.ndarray], np.ndarray], Dict]:
-    """Estimate mass-dependent positional scatter scale σx(M).
-
-    Algorithm:
-    1. Bin halos by log10(mass)
-    2. For each bin, compute median k-NN distance in 3D position
-    3. Smooth across bins via linear interpolation
-    4. Clip to min/max percentiles
-
-    Args:
-        positions: (N, 3) array of x,y,z coordinates
-        log_masses: (N,) array of log10(M200) masses
-        k: number of neighbors for k-NN scale estimation
-        n_bins: number of mass bins
-        min_bin_count: minimum halos per bin (bins with fewer are merged)
-        min_percentile: percentile for clipping σx floor
-        max_percentile: percentile for clipping σx ceiling
-
-    Returns:
-        sigma_x_func: Interpolation function: log_mass -> sigma_x
-        diagnostics: Dict with binning info for debugging
-    """
-    n_halos = len(positions)
-
-    # Compute k-NN distances for all halos
-    nn = NearestNeighbors(n_neighbors=k + 1, algorithm='auto')  # +1 because first neighbor is self
-    nn.fit(positions)
-    distances, _ = nn.kneighbors(positions)
-    knn_distances = distances[:, k]  # k-th neighbor distance (0-indexed, skip self)
-
-    # Create mass bins
-    log_mass_min, log_mass_max = np.min(log_masses), np.max(log_masses)
-    bin_edges = np.linspace(log_mass_min, log_mass_max, n_bins + 1)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-
-    # Compute median k-NN distance per bin
-    bin_sigmas = []
-    bin_counts = []
-    valid_bin_centers = []
-
-    for i in range(n_bins):
-        bin_mask = (log_masses >= bin_edges[i]) & (log_masses < bin_edges[i + 1])
-        # Include right edge for last bin
-        if i == n_bins - 1:
-            bin_mask = (log_masses >= bin_edges[i]) & (log_masses <= bin_edges[i + 1])
-
-        count = np.sum(bin_mask)
-        bin_counts.append(count)
-
-        if count >= min_bin_count:
-            bin_sigmas.append(np.median(knn_distances[bin_mask]))
-            valid_bin_centers.append(bin_centers[i])
-        elif count > 0:
-            # Underpopulated bin - will be interpolated
-            bin_sigmas.append(np.median(knn_distances[bin_mask]))
-            valid_bin_centers.append(bin_centers[i])
-
-    bin_sigmas = np.array(bin_sigmas)
-    valid_bin_centers = np.array(valid_bin_centers)
-
-    # Handle edge case: not enough valid bins
-    if len(bin_sigmas) < 2:
-        # Fall back to global median
-        global_sigma = np.median(knn_distances)
-        sigma_x_func = lambda log_m: np.full_like(log_m, global_sigma, dtype=float)
-        diagnostics = {
-            'method': 'global_fallback',
-            'global_sigma': global_sigma,
-            'n_halos': n_halos
-        }
-        return sigma_x_func, diagnostics
-
-    # Clip to percentiles
-    sigma_floor = np.percentile(bin_sigmas, min_percentile)
-    sigma_ceiling = np.percentile(bin_sigmas, max_percentile)
-    bin_sigmas_clipped = np.clip(bin_sigmas, sigma_floor, sigma_ceiling)
-
-    # Create piecewise-linear interpolator with extrapolation
-    sigma_x_interp = interp1d(
-        valid_bin_centers,
-        bin_sigmas_clipped,
-        kind='linear',
-        bounds_error=False,
-        fill_value=(bin_sigmas_clipped[0], bin_sigmas_clipped[-1])  # Extrapolate with edge values
-    )
-
-    def sigma_x_func(log_m: np.ndarray) -> np.ndarray:
-        log_m = np.atleast_1d(log_m)
-        return sigma_x_interp(log_m)
-
-    diagnostics = {
-        'method': 'binned_interpolation',
-        'n_bins': n_bins,
-        'bin_centers': valid_bin_centers,
-        'bin_sigmas': bin_sigmas_clipped,
-        'bin_counts': bin_counts,
-        'sigma_floor': sigma_floor,
-        'sigma_ceiling': sigma_ceiling,
-        'k': k
-    }
-
-    return sigma_x_func, diagnostics
-
-
 def compute_sigma_logM(log_masses: np.ndarray) -> float:
     """Compute scatter in log-mass space.
 
@@ -199,33 +86,28 @@ def compute_sigma_logM(log_masses: np.ndarray) -> float:
 def build_whitened_features(
     positions: np.ndarray,
     log_masses: np.ndarray,
-    sigma_x_func: Callable,
+    sigma_x: float,
     sigma_logM: float
 ) -> np.ndarray:
     """Build whitened 4D feature vectors for HDBSCAN.
 
-    Features: [x/σx(M), y/σx(M), z/σx(M), logM/σ_logM]
+    Features: [x/σx, y/σx, z/σx, logM/σ_logM]
 
     Args:
         positions: (N, 3) array of x,y,z coordinates
         log_masses: (N,) array of log10(M200) masses
-        sigma_x_func: function mapping log_mass to positional scale
+        sigma_x: fixed positional scale in Mpc (based on inference voxel size)
         sigma_logM: scatter in log-mass space
 
     Returns:
         (N, 4) array of whitened features
     """
-    n_halos = len(positions)
-
-    # Get mass-dependent positional scale
-    sigma_x = sigma_x_func(log_masses)
-
     # Avoid division by zero
-    sigma_x = np.maximum(sigma_x, 1e-6)
+    sigma_x = max(sigma_x, 1e-6)
     sigma_logM = max(sigma_logM, 1e-6)
 
-    # Whiten positions
-    whitened_positions = positions / sigma_x[:, np.newaxis]
+    # Whiten positions (same scale for all masses)
+    whitened_positions = positions / sigma_x
 
     # Whiten log-mass
     whitened_logM = log_masses / sigma_logM
@@ -575,18 +457,15 @@ def run_mode1a(config_path="config.toml", output_dir="output",
 
     log_masses = np.log10(masses)
 
-    # Step 2: Estimate mass-dependent positional scale
-    print("\nStep 2: Estimating mass-dependent positional scale σx(M)...")
-    sigma_x_func, sigma_diagnostics = estimate_sigma_x_of_mass(
-        positions, log_masses,
-        k=config.mode1a.knn_k,
-        n_bins=config.mode1a.n_mass_bins,
-        min_percentile=config.mode1a.sigma_x_min_percentile,
-        max_percentile=config.mode1a.sigma_x_max_percentile
-    )
-    print(f"  Method: {sigma_diagnostics['method']}")
-    if 'bin_sigmas' in sigma_diagnostics:
-        print(f"  σx range: {np.min(sigma_diagnostics['bin_sigmas']):.2f} - {np.max(sigma_diagnostics['bin_sigmas']):.2f} Mpc")
+    # Step 2: Get positional scale σx
+    print("\nStep 2: Using fixed positional scale σx...")
+    sigma_x = config.mode1a.sigma_x
+    print(f"  σx = {sigma_x:.1f} Mpc (based on Manticore inference voxel size)")
+
+    sigma_diagnostics = {
+        'method': 'fixed',
+        'sigma_x': sigma_x
+    }
 
     # Step 3: Compute σ_logM
     print("\nStep 3: Computing log-mass scatter σ_logM...")
@@ -599,7 +478,7 @@ def run_mode1a(config_path="config.toml", output_dir="output",
 
     # Step 4: Build whitened features
     print("\nStep 4: Building whitened 4D features...")
-    features = build_whitened_features(positions, log_masses, sigma_x_func, sigma_logM)
+    features = build_whitened_features(positions, log_masses, sigma_x, sigma_logM)
     print(f"  Feature shape: {features.shape}")
 
     # Step 5: Run HDBSCAN
@@ -764,14 +643,12 @@ def run_synthetic_test():
     # Run pipeline
     print("\nRunning HDBSCAN pipeline...")
 
-    # Estimate sigma_x
-    sigma_x_func, _ = estimate_sigma_x_of_mass(
-        positions, log_masses, k=8, n_bins=10
-    )
+    # Use fixed sigma_x (simulating voxel-based approach)
+    sigma_x = 5.0  # Mpc, reasonable for synthetic test
     sigma_logM = compute_sigma_logM(log_masses)
 
     # Build features
-    features = build_whitened_features(positions, log_masses, sigma_x_func, sigma_logM)
+    features = build_whitened_features(positions, log_masses, sigma_x, sigma_logM)
 
     # Run HDBSCAN
     min_cluster_size = max(10, round(0.15 * n_realizations))

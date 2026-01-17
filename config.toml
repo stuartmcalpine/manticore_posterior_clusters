@@ -48,20 +48,11 @@ min_samples = 12
 cluster_selection_method = "eom"
 
 # Whitening parameters
+# Fixed positional scale in Mpc (based on Manticore inference voxel size)
+sigma_x = 4.0
+
 # Scatter in log-mass space (0 = auto-compute from data)
 sigma_logM = 0.0
-
-# Number of neighbors for k-NN scale estimation
-knn_k = 8
-
-# Number of mass bins for sigma_x(M) estimation
-n_mass_bins = 10
-
-# Percentile for clipping sigma_x floor
-sigma_x_min_percentile = 5.0
-
-# Percentile for clipping sigma_x ceiling
-sigma_x_max_percentile = 95.0
 
 # Stability classification thresholds
 # Minimum existence probability for 'stable' status
