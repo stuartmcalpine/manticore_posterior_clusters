@@ -23,9 +23,6 @@ class Mode1aConfig:
     min_cluster_size: int
     min_samples: int
     cluster_selection_method: str
-    # Whitening parameters
-    sigma_x: float  # Fixed positional scale in Mpc (based on inference voxel size)
-    sigma_logM: float
     # Stability thresholds
     existence_prob_stable: float
     existence_prob_tentative: float
@@ -131,9 +128,6 @@ def load_config(config_path: str = "config.toml") -> Config:
         min_cluster_size=int(data['mode1a'].get('min_cluster_size', default_min_cluster_size)),
         min_samples=int(data['mode1a'].get('min_samples', default_min_cluster_size)),
         cluster_selection_method=str(data['mode1a'].get('cluster_selection_method', 'eom')),
-        # Whitening parameters
-        sigma_x=float(data['mode1a'].get('sigma_x', 4.0)),  # Default: 4 Mpc (Manticore voxel size)
-        sigma_logM=float(data['mode1a'].get('sigma_logM', 0.0)),
         # Stability thresholds
         existence_prob_stable=float(data['mode1a'].get('existence_prob_stable', 0.5)),
         existence_prob_tentative=float(data['mode1a'].get('existence_prob_tentative', 0.2))

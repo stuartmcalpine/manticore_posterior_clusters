@@ -24,7 +24,7 @@ hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
 hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
 
 [mode1a]
-# Mode 1a: HDBSCAN posterior clustering with mass-adaptive whitening
+# Mode 1a: Pure 3D HDBSCAN posterior clustering (positions only)
 # First MCMC sample index to include in clustering analysis
 mcmc_start = 0
 
@@ -46,13 +46,6 @@ min_samples = 12
 
 # Cluster selection method: 'eom' (excess of mass) or 'leaf'
 cluster_selection_method = "eom"
-
-# Whitening parameters
-# Fixed positional scale in Mpc (based on Manticore inference voxel size)
-sigma_x = 4.0
-
-# Scatter in log-mass space (0 = auto-compute from data)
-sigma_logM = 0.0
 
 # Stability classification thresholds
 # Minimum existence probability for 'stable' status

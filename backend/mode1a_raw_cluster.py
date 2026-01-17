@@ -1,16 +1,16 @@
 """
 Mode 1a: HDBSCAN Posterior Clustering Pipeline
 
-Performs whitened clustering on combined halo catalogs from MCMC posterior
-resimulations to identify stable halo associations.
+Performs pure 3D position-based clustering on combined halo catalogs from MCMC
+posterior resimulations to identify stable halo associations.
 
 Key features:
-- Fixed positional scale σx based on inference voxel size (4 Mpc default)
-- 4D whitened features: [x/σx, y/σx, z/σx, logM/σ_logM]
+- Pure 3D spatial clustering (positions only, no whitening)
 - HDBSCAN for density-based clustering with soft cluster membership
 - Explicit noise handling
 - One-per-realization constraint enforcement
 - Comprehensive stability/uncertainty metrics
+- Mass filtering done in post-processing (Mode 1b)
 """
 
 import numpy as np
@@ -72,62 +72,16 @@ def load_halo_data(config) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarr
     return positions, masses, realization_ids, halo_indices, combined_data
 
 
-def compute_sigma_logM(log_masses: np.ndarray) -> float:
-    """Compute scatter in log-mass space.
-
-    Uses robust IQR-based estimate of standard deviation.
-    """
-    iqr = np.percentile(log_masses, 75) - np.percentile(log_masses, 25)
-    # IQR to sigma conversion factor for normal distribution
-    sigma_estimate = iqr / 1.349
-    return max(sigma_estimate, 0.1)  # Floor at 0.1 dex
-
-
-def build_whitened_features(
-    positions: np.ndarray,
-    log_masses: np.ndarray,
-    sigma_x: float,
-    sigma_logM: float
-) -> np.ndarray:
-    """Build whitened 4D feature vectors for HDBSCAN.
-
-    Features: [x/σx, y/σx, z/σx, logM/σ_logM]
-
-    Args:
-        positions: (N, 3) array of x,y,z coordinates
-        log_masses: (N,) array of log10(M200) masses
-        sigma_x: fixed positional scale in Mpc (based on inference voxel size)
-        sigma_logM: scatter in log-mass space
-
-    Returns:
-        (N, 4) array of whitened features
-    """
-    # Avoid division by zero
-    sigma_x = max(sigma_x, 1e-6)
-    sigma_logM = max(sigma_logM, 1e-6)
-
-    # Whiten positions (same scale for all masses)
-    whitened_positions = positions / sigma_x
-
-    # Whiten log-mass
-    whitened_logM = log_masses / sigma_logM
-
-    # Combine into 4D features
-    features = np.column_stack([whitened_positions, whitened_logM])
-
-    return features
-
-
 def run_hdbscan(
-    features: np.ndarray,
+    positions: np.ndarray,
     min_cluster_size: int,
     min_samples: int,
     cluster_selection_method: str = 'eom'
 ) -> Tuple[np.ndarray, np.ndarray, 'hdbscan.HDBSCAN']:
-    """Run HDBSCAN clustering on whitened features.
+    """Run HDBSCAN clustering on 3D positions.
 
     Args:
-        features: (N, 4) whitened feature vectors
+        positions: (N, 3) array of x,y,z coordinates in Mpc
         min_cluster_size: minimum cluster size for HDBSCAN
         min_samples: minimum samples for core point
         cluster_selection_method: 'eom' (excess of mass) or 'leaf'
@@ -145,7 +99,7 @@ def run_hdbscan(
         prediction_data=True
     )
 
-    labels = clusterer.fit_predict(features)
+    labels = clusterer.fit_predict(positions)
     probabilities = clusterer.probabilities_
 
     return labels, probabilities, clusterer
@@ -401,16 +355,14 @@ def summarize_clusters(
 def run_mode1a(config_path="config.toml", output_dir="output",
                min_cluster_size=None, min_samples=None):
     """
-    Mode 1a: HDBSCAN Posterior Clustering
+    Mode 1a: Pure 3D HDBSCAN Posterior Clustering
 
     Performs:
     1. Load data from MCMC samples
-    2. Estimate mass-dependent positional scale σx(M)
-    3. Build whitened 4D features
-    4. Run HDBSCAN clustering
-    5. Enforce one-per-realization constraint
-    6. Compute cluster summaries
-    7. Save results to HDF5
+    2. Run HDBSCAN clustering on 3D positions
+    3. Enforce one-per-realization constraint
+    4. Compute cluster summaries
+    5. Save results to HDF5
 
     Args:
         config_path: Path to config.toml
@@ -430,7 +382,7 @@ def run_mode1a(config_path="config.toml", output_dir="output",
     n_realizations = config.mode1a.mcmc_end - config.mode1a.mcmc_start + 1
 
     print("=" * 60)
-    print("Mode 1a: HDBSCAN Posterior Clustering")
+    print("Mode 1a: Pure 3D HDBSCAN Posterior Clustering")
     print("=" * 60)
 
     # Step 1: Load data
@@ -455,37 +407,11 @@ def run_mode1a(config_path="config.toml", output_dir="output",
                 combined_data[key] = combined_data[key][valid_mass_mask]
         n_total_halos = len(positions)
 
-    log_masses = np.log10(masses)
-
-    # Step 2: Get positional scale σx
-    print("\nStep 2: Using fixed positional scale σx...")
-    sigma_x = config.mode1a.sigma_x
-    print(f"  σx = {sigma_x:.1f} Mpc (based on Manticore inference voxel size)")
-
-    sigma_diagnostics = {
-        'method': 'fixed',
-        'sigma_x': sigma_x
-    }
-
-    # Step 3: Compute σ_logM
-    print("\nStep 3: Computing log-mass scatter σ_logM...")
-    if config.mode1a.sigma_logM > 0:
-        sigma_logM = config.mode1a.sigma_logM
-        print(f"  Using configured σ_logM: {sigma_logM:.3f} dex")
-    else:
-        sigma_logM = compute_sigma_logM(log_masses)
-        print(f"  Auto-computed σ_logM: {sigma_logM:.3f} dex")
-
-    # Step 4: Build whitened features
-    print("\nStep 4: Building whitened 4D features...")
-    features = build_whitened_features(positions, log_masses, sigma_x, sigma_logM)
-    print(f"  Feature shape: {features.shape}")
-
-    # Step 5: Run HDBSCAN
-    print(f"\nStep 5: Running HDBSCAN (min_cluster_size={config.mode1a.min_cluster_size}, "
+    # Step 2: Run HDBSCAN on 3D positions
+    print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode1a.min_cluster_size}, "
           f"min_samples={config.mode1a.min_samples}, method='{config.mode1a.cluster_selection_method}')...")
     labels, probabilities, clusterer = run_hdbscan(
-        features,
+        positions,
         config.mode1a.min_cluster_size,
         config.mode1a.min_samples,
         config.mode1a.cluster_selection_method
@@ -500,8 +426,8 @@ def run_mode1a(config_path="config.toml", output_dir="output",
     print(f"    Clustered halos: {n_clustered_raw} ({100*n_clustered_raw/n_total_halos:.1f}%)")
     print(f"    Noise halos: {n_noise_raw} ({100*n_noise_raw/n_total_halos:.1f}%)")
 
-    # Step 6: Enforce one-per-realization constraint
-    print("\nStep 6: Enforcing one-per-realization constraint...")
+    # Step 3: Enforce one-per-realization constraint
+    print("\nStep 3: Enforcing one-per-realization constraint...")
     labels, dropped_mask, ambiguity_rates = enforce_one_per_realization(
         labels, probabilities, positions, realization_ids, n_realizations
     )
@@ -518,8 +444,8 @@ def run_mode1a(config_path="config.toml", output_dir="output",
         mean_ambiguity = np.mean(list(ambiguity_rates.values()))
         print(f"  Mean ambiguity rate: {mean_ambiguity:.1%}")
 
-    # Step 7: Summarize clusters
-    print("\nStep 7: Computing cluster summaries...")
+    # Step 4: Summarize clusters
+    print("\nStep 4: Computing cluster summaries...")
     cluster_summaries = summarize_clusters(
         labels, probabilities, positions, masses, realization_ids, combined_data,
         clusterer, ambiguity_rates, n_realizations,
@@ -545,12 +471,13 @@ def run_mode1a(config_path="config.toml", output_dir="output",
         print(f"    Members: {cluster['n_members']}")
         print(f"    M200 mean: {cluster['mean_m200_mass']:.2e} Msol")
         print(f"    Log M200 std: {cluster['log10_m200_mass_std']:.3f} dex")
+        print(f"    Position std: [{cluster['position_std'][0]:.2f}, {cluster['position_std'][1]:.2f}, {cluster['position_std'][2]:.2f}] Mpc")
         print(f"    Center: [{cluster['center_xyz'][0]:.1f}, {cluster['center_xyz'][1]:.1f}, {cluster['center_xyz'][2]:.1f}]")
         print(f"    Mean membership prob: {cluster['mean_membership_prob']:.3f}")
         print(f"    Ambiguity rate: {cluster['ambiguity_rate']:.1%}")
 
-    # Step 8: Save results
-    print("\nStep 8: Saving results to HDF5...")
+    # Step 5: Save results
+    print("\nStep 5: Saving results to HDF5...")
     filename = (f"hdbscan_clusters_mcs_{config.mode1a.min_cluster_size}_"
                 f"ms_{config.mode1a.min_samples}.h5")
 
@@ -565,8 +492,8 @@ def run_mode1a(config_path="config.toml", output_dir="output",
         config=config,
         output_dir=output_dir,
         filename=filename,
-        sigma_diagnostics=sigma_diagnostics,
-        sigma_logM=sigma_logM
+        sigma_diagnostics={'method': 'pure_3d'},
+        sigma_logM=None
     )
 
     print("\n" + "=" * 60)
@@ -609,10 +536,8 @@ def run_synthetic_test():
     for real_id in range(n_realizations):
         # Add true halos with scatter
         for i in range(n_true_halos):
-            # Mass-dependent positional scatter
-            log_mass = np.log10(true_masses[i])
-            pos_scatter = 5.0 * (15 - log_mass)  # Higher scatter for lower mass
-            pos_scatter = max(pos_scatter, 2.0)
+            # Position scatter (3 Mpc for all - testing pure 3D clustering)
+            pos_scatter = 3.0
 
             pos = true_positions[i] + np.random.normal(0, pos_scatter, 3)
             mass = true_masses[i] * 10**(np.random.normal(0, 0.1))  # 0.1 dex scatter
@@ -632,7 +557,6 @@ def run_synthetic_test():
     positions = np.array(all_positions)
     masses = np.array(all_masses)
     realization_ids = np.array(all_realization_ids)
-    log_masses = np.log10(masses)
 
     print(f"\nSynthetic data:")
     print(f"  Total halos: {len(positions)}")
@@ -641,18 +565,11 @@ def run_synthetic_test():
     print(f"  Clutter per realization: {clutter_per_realization}")
 
     # Run pipeline
-    print("\nRunning HDBSCAN pipeline...")
+    print("\nRunning HDBSCAN pipeline on 3D positions...")
 
-    # Use fixed sigma_x (simulating voxel-based approach)
-    sigma_x = 5.0  # Mpc, reasonable for synthetic test
-    sigma_logM = compute_sigma_logM(log_masses)
-
-    # Build features
-    features = build_whitened_features(positions, log_masses, sigma_x, sigma_logM)
-
-    # Run HDBSCAN
+    # Run HDBSCAN directly on positions
     min_cluster_size = max(10, round(0.15 * n_realizations))
-    labels, probabilities, clusterer = run_hdbscan(features, min_cluster_size, min_cluster_size, 'eom')
+    labels, probabilities, clusterer = run_hdbscan(positions, min_cluster_size, min_cluster_size, 'eom')
 
     # Enforce constraint
     labels, dropped_mask, ambiguity_rates = enforce_one_per_realization(
