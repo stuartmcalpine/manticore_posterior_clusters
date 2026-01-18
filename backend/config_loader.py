@@ -46,6 +46,8 @@ class Mode3Config:
     # HDBSCAN parameters (same as mode1)
     min_cluster_size: int
     min_samples: int
+    # Random seed for reproducible observer positions across parameter sweeps
+    random_seed: int
 
 @dataclass
 class Mode4Config:
@@ -101,7 +103,8 @@ def load_config(config_path: str = "config.toml") -> Config:
         radius_cut=float(data['mode3']['radius_cut']),
         num_samplings=int(data['mode3']['num_samplings']),
         min_cluster_size=int(data['mode3'].get('min_cluster_size', default_mode3_min_cluster_size)),
-        min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size))
+        min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size)),
+        random_seed=int(data['mode3'].get('random_seed', 42))
     )
 
     mode4_config = Mode4Config(

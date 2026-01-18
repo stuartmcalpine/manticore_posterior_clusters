@@ -32,7 +32,12 @@ def load_random_control_data(config):
 
     Each control simulation is sampled multiple times with different random
     observer positions, creating "virtual" MCMC samples for clustering.
+
+    Uses config.mode3.random_seed for reproducibility across parameter sweeps.
     """
+
+    # Set random seed for reproducible observer positions across parameter runs
+    np.random.seed(config.mode3.random_seed)
 
     # Calculate total virtual mcmc samples
     n_real_sims = config.mode3.mcmc_end - config.mode3.mcmc_start + 1
@@ -387,6 +392,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
     print(f"Total virtual realizations: {n_realizations}")
     print(f"M200 mass cut: {config.mode3.m200_mass_cut:.2e} Msol")
     print(f"Radius cut: {config.mode3.radius_cut} Mpc")
+    print(f"Random seed: {config.mode3.random_seed}")
 
     # Step 1: Load data
     print("\nStep 1: Loading random control data...")
