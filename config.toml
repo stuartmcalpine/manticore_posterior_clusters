@@ -23,8 +23,8 @@ hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
 # Filename pattern for HDF5 snapshot files ({snap_num:04d} is replaced with snapshot number)
 hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
 
-[mode1a]
-# Mode 1a: Pure 3D HDBSCAN posterior clustering (positions only)
+[mode1]
+# Mode 1: Pure 3D HDBSCAN posterior clustering (positions only)
 # First MCMC sample index to include in clustering analysis
 mcmc_start = 0
 
@@ -54,20 +54,6 @@ existence_prob_stable = 0.5
 # Minimum existence probability for 'tentative' status (below = 'rare')
 existence_prob_tentative = 0.2
 
-[mode1b]
-# Mode 1b: Post-processing corrections (MCMC constraint + mass filtering)
-# Input filename from mode1a (default: raw_clusters_eps_*_min_samples_*.h5)
-input_filename = ""
-
-# Minimum association size (number of members) required to save to HDF5 output
-min_association_size = 10
-
-# Log-mass threshold in dex for outlier detection (0.3 dex ~ factor of 2 mass difference)
-mass_outlier_threshold = 0.3
-
-# Whether to use combined position+mass distance for MCMC constraint selection
-use_mass_distance = true
-
 [mode2]
 # Earliest snapshot to trace halos back to (lower = further back in time)
 target_snapshot = 10
@@ -85,6 +71,7 @@ min_match_rate = 0.8
 distance_tolerance_rel = 0.2
 
 [mode3]
+# Mode 3: Random control simulation analysis (uses same HDBSCAN as mode1)
 # Base directory containing the control (unconstrained) simulation data
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
 
@@ -103,11 +90,12 @@ radius_cut = 400.0
 # Number of random observer position samplings per control simulation
 num_samplings = 8
 
-# DBSCAN epsilon parameter in Mpc for control simulation clustering
-eps = 1.75
+# HDBSCAN parameters (same as mode1)
+# Default: ~15% of total virtual realizations (10 sims * 8 samplings = 80 -> 12)
+min_cluster_size = 12
 
-# DBSCAN minimum samples parameter for control simulation clustering
-min_samples = 9
+# Minimum samples for core point
+min_samples = 12
 
 [mode4]
 # Base directory containing the control simulation data for tracing

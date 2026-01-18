@@ -1,5 +1,5 @@
 """
-Mode 1a: HDBSCAN Posterior Clustering Pipeline
+Mode 1: HDBSCAN Posterior Clustering Pipeline
 
 Performs pure 3D position-based clustering on combined halo catalogs from MCMC
 posterior resimulations to identify stable halo associations.
@@ -10,7 +10,6 @@ Key features:
 - Explicit noise handling
 - One-per-realization constraint enforcement
 - Comprehensive stability/uncertainty metrics
-- Mass filtering done in post-processing (Mode 1b)
 """
 
 import numpy as np
@@ -22,7 +21,7 @@ try:
 except ImportError:
     raise ImportError("hdbscan package required. Install with: pip install hdbscan")
 
-from backend.config_loader import load_config, Mode1aConfig
+from backend.config_loader import load_config, Mode1Config
 from backend.io import ensure_output_dir, save_hdbscan_clusters_to_hdf5
 from backend.common_clustering import load_data_with_radius_filter, combine_haloes, _compute_shape_measures
 
@@ -53,12 +52,12 @@ def load_halo_data(config) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarr
     # Create wrapper config for compatibility
     config_wrapper = deepcopy(config)
     config_wrapper.mode1 = Mode1Wrapper(
-        mcmc_start=config.mode1a.mcmc_start,
-        mcmc_end=config.mode1a.mcmc_end,
-        m200_mass_cut=config.mode1a.m200_mass_cut,
-        radius_cut=config.mode1a.radius_cut,
-        min_cluster_size=config.mode1a.min_cluster_size,
-        min_samples=config.mode1a.min_samples
+        mcmc_start=config.mode1.mcmc_start,
+        mcmc_end=config.mode1.mcmc_end,
+        m200_mass_cut=config.mode1.m200_mass_cut,
+        radius_cut=config.mode1.radius_cut,
+        min_cluster_size=config.mode1.min_cluster_size,
+        min_samples=config.mode1.min_samples
     )
 
     mcmc_data = load_data_with_radius_filter(config_wrapper)
@@ -112,7 +111,7 @@ def enforce_one_per_realization(
     realization_ids: np.ndarray,
     n_realizations: int
 ) -> Tuple[np.ndarray, np.ndarray, Dict[int, float]]:
-    """Enforce ≤1 halo per realization per cluster.
+    """Enforce <=1 halo per realization per cluster.
 
     Selection criteria (in order):
     1. Highest membership probability
@@ -352,10 +351,10 @@ def summarize_clusters(
     return cluster_summaries
 
 
-def run_mode1a(config_path="config.toml", output_dir="output",
-               min_cluster_size=None, min_samples=None):
+def run_mode1(config_path="config.toml", output_dir="output",
+              min_cluster_size=None, min_samples=None):
     """
-    Mode 1a: Pure 3D HDBSCAN Posterior Clustering
+    Mode 1: Pure 3D HDBSCAN Posterior Clustering
 
     Performs:
     1. Load data from MCMC samples
@@ -375,14 +374,14 @@ def run_mode1a(config_path="config.toml", output_dir="output",
 
     # Override parameters if provided
     if min_cluster_size is not None:
-        config.mode1a.min_cluster_size = min_cluster_size
+        config.mode1.min_cluster_size = min_cluster_size
     if min_samples is not None:
-        config.mode1a.min_samples = min_samples
+        config.mode1.min_samples = min_samples
 
-    n_realizations = config.mode1a.mcmc_end - config.mode1a.mcmc_start + 1
+    n_realizations = config.mode1.mcmc_end - config.mode1.mcmc_start + 1
 
     print("=" * 60)
-    print("Mode 1a: Pure 3D HDBSCAN Posterior Clustering")
+    print("Mode 1: Pure 3D HDBSCAN Posterior Clustering")
     print("=" * 60)
 
     # Step 1: Load data
@@ -391,7 +390,7 @@ def run_mode1a(config_path="config.toml", output_dir="output",
 
     n_total_halos = len(positions)
     print(f"  Total halos loaded: {n_total_halos}")
-    print(f"  Realizations: {config.mode1a.mcmc_start} to {config.mode1a.mcmc_end} ({n_realizations} total)")
+    print(f"  Realizations: {config.mode1.mcmc_start} to {config.mode1.mcmc_end} ({n_realizations} total)")
 
     # Filter non-positive masses
     valid_mass_mask = masses > 0
@@ -408,13 +407,13 @@ def run_mode1a(config_path="config.toml", output_dir="output",
         n_total_halos = len(positions)
 
     # Step 2: Run HDBSCAN on 3D positions
-    print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode1a.min_cluster_size}, "
-          f"min_samples={config.mode1a.min_samples}, method='{config.mode1a.cluster_selection_method}')...")
+    print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode1.min_cluster_size}, "
+          f"min_samples={config.mode1.min_samples}, method='{config.mode1.cluster_selection_method}')...")
     labels, probabilities, clusterer = run_hdbscan(
         positions,
-        config.mode1a.min_cluster_size,
-        config.mode1a.min_samples,
-        config.mode1a.cluster_selection_method
+        config.mode1.min_cluster_size,
+        config.mode1.min_samples,
+        config.mode1.cluster_selection_method
     )
 
     n_clusters_raw = len(np.unique(labels[labels != -1]))
@@ -449,8 +448,8 @@ def run_mode1a(config_path="config.toml", output_dir="output",
     cluster_summaries = summarize_clusters(
         labels, probabilities, positions, masses, realization_ids, combined_data,
         clusterer, ambiguity_rates, n_realizations,
-        config.mode1a.existence_prob_stable,
-        config.mode1a.existence_prob_tentative
+        config.mode1.existence_prob_stable,
+        config.mode1.existence_prob_tentative
     )
 
     n_stable = sum(1 for c in cluster_summaries if c['status'] == 'stable')
@@ -458,9 +457,9 @@ def run_mode1a(config_path="config.toml", output_dir="output",
     n_rare = sum(1 for c in cluster_summaries if c['status'] == 'rare')
 
     print(f"  Total clusters: {len(cluster_summaries)}")
-    print(f"  Stable (existence_prob >= {config.mode1a.existence_prob_stable:.0%}): {n_stable}")
-    print(f"  Tentative (>= {config.mode1a.existence_prob_tentative:.0%}): {n_tentative}")
-    print(f"  Rare (< {config.mode1a.existence_prob_tentative:.0%}): {n_rare}")
+    print(f"  Stable (existence_prob >= {config.mode1.existence_prob_stable:.0%}): {n_stable}")
+    print(f"  Tentative (>= {config.mode1.existence_prob_tentative:.0%}): {n_tentative}")
+    print(f"  Rare (< {config.mode1.existence_prob_tentative:.0%}): {n_rare}")
 
     # Show top clusters
     print("\nTop 10 clusters by existence probability:")
@@ -478,8 +477,8 @@ def run_mode1a(config_path="config.toml", output_dir="output",
 
     # Step 5: Save results
     print("\nStep 5: Saving results to HDF5...")
-    filename = (f"hdbscan_clusters_mcs_{config.mode1a.min_cluster_size}_"
-                f"ms_{config.mode1a.min_samples}.h5")
+    filename = (f"hdbscan_clusters_mcs_{config.mode1.min_cluster_size}_"
+                f"ms_{config.mode1.min_samples}.h5")
 
     save_hdbscan_clusters_to_hdf5(
         cluster_summaries=cluster_summaries,
@@ -497,7 +496,7 @@ def run_mode1a(config_path="config.toml", output_dir="output",
     )
 
     print("\n" + "=" * 60)
-    print("Mode 1a complete!")
+    print("Mode 1 complete!")
     print(f"Output file: {output_dir}/{filename}")
     print("=" * 60)
 
@@ -634,7 +633,7 @@ if __name__ == '__main__':
         success = run_synthetic_test()
         exit(0 if success else 1)
     else:
-        run_mode1a(
+        run_mode1(
             config_path=args.config,
             output_dir=args.output,
             min_cluster_size=args.min_cluster_size,

@@ -14,7 +14,7 @@ class GlobalConfig:
     hdf5_filename_pattern: str
 
 @dataclass
-class Mode1aConfig:
+class Mode1Config:
     mcmc_start: int
     mcmc_end: int
     m200_mass_cut: float
@@ -26,13 +26,6 @@ class Mode1aConfig:
     # Stability thresholds
     existence_prob_stable: float
     existence_prob_tentative: float
-
-@dataclass
-class Mode1bConfig:
-    input_filename: str
-    min_association_size: int
-    mass_outlier_threshold: float
-    use_mass_distance: bool
 
 @dataclass
 class Mode2Config:
@@ -50,7 +43,8 @@ class Mode3Config:
     m200_mass_cut: float
     radius_cut: float
     num_samplings: int
-    eps: float
+    # HDBSCAN parameters (same as mode1)
+    min_cluster_size: int
     min_samples: int
 
 @dataclass
@@ -66,8 +60,7 @@ class Mode4Config:
 @dataclass
 class Config:
     global_config: GlobalConfig
-    mode1a: Mode1aConfig
-    mode1b: Mode1bConfig
+    mode1: Mode1Config
     mode2: Mode2Config
     mode3: Mode3Config
     mode4: Mode4Config
@@ -94,6 +87,12 @@ def load_config(config_path: str = "config.toml") -> Config:
         distance_tolerance_rel=float(data['mode2'].get('distance_tolerance_rel', 0.2))
     )
 
+    # Compute default min_cluster_size for mode3 based on number of virtual realizations
+    n_mode3_sims = int(data['mode3']['mcmc_end']) - int(data['mode3']['mcmc_start']) + 1
+    n_mode3_samplings = int(data['mode3']['num_samplings'])
+    n_mode3_realizations = n_mode3_sims * n_mode3_samplings
+    default_mode3_min_cluster_size = max(10, round(0.15 * n_mode3_realizations))
+
     mode3_config = Mode3Config(
         basedir=str(data['mode3']['basedir']),
         mcmc_start=int(data['mode3']['mcmc_start']),
@@ -101,8 +100,8 @@ def load_config(config_path: str = "config.toml") -> Config:
         m200_mass_cut=float(data['mode3']['m200_mass_cut']),
         radius_cut=float(data['mode3']['radius_cut']),
         num_samplings=int(data['mode3']['num_samplings']),
-        eps=float(data['mode3']['eps']),
-        min_samples=int(data['mode3']['min_samples'])
+        min_cluster_size=int(data['mode3'].get('min_cluster_size', default_mode3_min_cluster_size)),
+        min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size))
     )
 
     mode4_config = Mode4Config(
@@ -116,34 +115,26 @@ def load_config(config_path: str = "config.toml") -> Config:
     )
 
     # Compute default min_cluster_size based on number of realizations
-    n_realizations = int(data['mode1a']['mcmc_end']) - int(data['mode1a']['mcmc_start']) + 1
+    n_realizations = int(data['mode1']['mcmc_end']) - int(data['mode1']['mcmc_start']) + 1
     default_min_cluster_size = max(10, round(0.15 * n_realizations))
 
-    mode1a_config = Mode1aConfig(
-        mcmc_start=int(data['mode1a']['mcmc_start']),
-        mcmc_end=int(data['mode1a']['mcmc_end']),
-        m200_mass_cut=float(data['mode1a']['m200_mass_cut']),
-        radius_cut=float(data['mode1a']['radius_cut']),
+    mode1_config = Mode1Config(
+        mcmc_start=int(data['mode1']['mcmc_start']),
+        mcmc_end=int(data['mode1']['mcmc_end']),
+        m200_mass_cut=float(data['mode1']['m200_mass_cut']),
+        radius_cut=float(data['mode1']['radius_cut']),
         # HDBSCAN parameters
-        min_cluster_size=int(data['mode1a'].get('min_cluster_size', default_min_cluster_size)),
-        min_samples=int(data['mode1a'].get('min_samples', default_min_cluster_size)),
-        cluster_selection_method=str(data['mode1a'].get('cluster_selection_method', 'eom')),
+        min_cluster_size=int(data['mode1'].get('min_cluster_size', default_min_cluster_size)),
+        min_samples=int(data['mode1'].get('min_samples', default_min_cluster_size)),
+        cluster_selection_method=str(data['mode1'].get('cluster_selection_method', 'eom')),
         # Stability thresholds
-        existence_prob_stable=float(data['mode1a'].get('existence_prob_stable', 0.5)),
-        existence_prob_tentative=float(data['mode1a'].get('existence_prob_tentative', 0.2))
-    )
-
-    mode1b_config = Mode1bConfig(
-        input_filename=str(data['mode1b'].get('input_filename', '')),
-        min_association_size=int(data['mode1b']['min_association_size']),
-        mass_outlier_threshold=float(data['mode1b']['mass_outlier_threshold']),
-        use_mass_distance=bool(data['mode1b']['use_mass_distance'])
+        existence_prob_stable=float(data['mode1'].get('existence_prob_stable', 0.5)),
+        existence_prob_tentative=float(data['mode1'].get('existence_prob_tentative', 0.2))
     )
 
     return Config(
         global_config=global_config,
-        mode1a=mode1a_config,
-        mode1b=mode1b_config,
+        mode1=mode1_config,
         mode2=mode2_config,
         mode3=mode3_config,
         mode4=mode4_config

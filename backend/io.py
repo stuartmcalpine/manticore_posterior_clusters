@@ -650,7 +650,7 @@ def save_raw_dbscan_to_hdf5(cluster_labels, positions, m200_masses, halo_provena
     combined_data : dict
         Dictionary of all halo properties
     config : Config
-        Configuration object with mode1a settings
+        Configuration object with mode1 settings (or mode3 for control sims)
     output_dir : str
         Output directory path
     filename : str
@@ -661,14 +661,16 @@ def save_raw_dbscan_to_hdf5(cluster_labels, positions, m200_masses, halo_provena
     with h5py.File(filepath, 'w') as f:
         # Metadata group
         meta_grp = f.create_group('metadata')
-        meta_grp.attrs['mcmc_start'] = config.mode1a.mcmc_start
-        meta_grp.attrs['mcmc_end'] = config.mode1a.mcmc_end
-        meta_grp.attrs['eps'] = config.mode1a.eps
-        meta_grp.attrs['min_samples'] = config.mode1a.min_samples
-        meta_grp.attrs['m200_mass_cut'] = config.mode1a.m200_mass_cut
-        meta_grp.attrs['radius_cut'] = config.mode1a.radius_cut
-        meta_grp.attrs['mass_weighted_clustering'] = config.mode1a.mass_weighted_clustering
-        meta_grp.attrs['mass_weight_power'] = config.mode1a.mass_weight_power
+        # Store config parameters - try mode1 first, fall back to mode3 for control sims
+        mode_config = getattr(config, 'mode1', None) or getattr(config, 'mode3', None)
+        if mode_config:
+            meta_grp.attrs['mcmc_start'] = mode_config.mcmc_start
+            meta_grp.attrs['mcmc_end'] = mode_config.mcmc_end
+            if hasattr(mode_config, 'eps'):
+                meta_grp.attrs['eps'] = mode_config.eps
+            meta_grp.attrs['min_samples'] = mode_config.min_samples
+            meta_grp.attrs['m200_mass_cut'] = mode_config.m200_mass_cut
+            meta_grp.attrs['radius_cut'] = mode_config.radius_cut
         meta_grp.attrs['basedir'] = config.global_config.basedir
         meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
         meta_grp.attrs['boxsize'] = config.global_config.boxsize
@@ -815,7 +817,7 @@ def save_hdbscan_clusters_to_hdf5(
         dropped_by_enforcement (N,) - bool
     """
     filepath = os.path.join(output_dir, filename)
-    n_realizations = config.mode1a.mcmc_end - config.mode1a.mcmc_start + 1
+    n_realizations = config.mode1.mcmc_end - config.mode1.mcmc_start + 1
 
     n_total_halos = len(labels)
     n_noise = np.sum(labels == -1)
@@ -825,20 +827,20 @@ def save_hdbscan_clusters_to_hdf5(
     with h5py.File(filepath, 'w') as f:
         # Metadata group
         meta_grp = f.create_group('metadata')
-        meta_grp.attrs['mcmc_start'] = config.mode1a.mcmc_start
-        meta_grp.attrs['mcmc_end'] = config.mode1a.mcmc_end
-        meta_grp.attrs['m200_mass_cut'] = config.mode1a.m200_mass_cut
-        meta_grp.attrs['radius_cut'] = config.mode1a.radius_cut
-        meta_grp.attrs['min_cluster_size'] = config.mode1a.min_cluster_size
-        meta_grp.attrs['min_samples'] = config.mode1a.min_samples
-        meta_grp.attrs['cluster_selection_method'] = config.mode1a.cluster_selection_method
+        meta_grp.attrs['mcmc_start'] = config.mode1.mcmc_start
+        meta_grp.attrs['mcmc_end'] = config.mode1.mcmc_end
+        meta_grp.attrs['m200_mass_cut'] = config.mode1.m200_mass_cut
+        meta_grp.attrs['radius_cut'] = config.mode1.radius_cut
+        meta_grp.attrs['min_cluster_size'] = config.mode1.min_cluster_size
+        meta_grp.attrs['min_samples'] = config.mode1.min_samples
+        meta_grp.attrs['cluster_selection_method'] = config.mode1.cluster_selection_method
         meta_grp.attrs['n_realizations'] = n_realizations
         meta_grp.attrs['n_total_halos'] = n_total_halos
         meta_grp.attrs['n_clustered'] = n_clustered
         meta_grp.attrs['n_noise'] = n_noise
         meta_grp.attrs['n_clusters'] = n_clusters
-        meta_grp.attrs['existence_prob_stable'] = config.mode1a.existence_prob_stable
-        meta_grp.attrs['existence_prob_tentative'] = config.mode1a.existence_prob_tentative
+        meta_grp.attrs['existence_prob_stable'] = config.mode1.existence_prob_stable
+        meta_grp.attrs['existence_prob_tentative'] = config.mode1.existence_prob_tentative
         meta_grp.attrs['basedir'] = config.global_config.basedir
         meta_grp.attrs['observer_coords'] = config.global_config.observer_coords
 
