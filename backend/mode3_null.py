@@ -27,11 +27,48 @@ from backend.io import ensure_output_dir, save_hdbscan_clusters_to_hdf5
 from backend.common_clustering import combine_haloes, _compute_shape_measures
 
 
+def random_rotation_matrix():
+    """Generate a random 3D rotation matrix using random Euler angles.
+
+    Returns:
+        3x3 rotation matrix
+    """
+    # Random angles for each axis
+    alpha = np.random.uniform(0, 2 * np.pi)  # Rotation around x-axis
+    beta = np.random.uniform(0, 2 * np.pi)   # Rotation around y-axis
+    gamma = np.random.uniform(0, 2 * np.pi)  # Rotation around z-axis
+
+    # Rotation matrices for each axis
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(alpha), -np.sin(alpha)],
+        [0, np.sin(alpha), np.cos(alpha)]
+    ])
+
+    Ry = np.array([
+        [np.cos(beta), 0, np.sin(beta)],
+        [0, 1, 0],
+        [-np.sin(beta), 0, np.cos(beta)]
+    ])
+
+    Rz = np.array([
+        [np.cos(gamma), -np.sin(gamma), 0],
+        [np.sin(gamma), np.cos(gamma), 0],
+        [0, 0, 1]
+    ])
+
+    # Combined rotation: R = Rz @ Ry @ Rx
+    return Rz @ Ry @ Rx
+
+
 def load_random_control_data(config):
     """Load random control simulations with multiple random observer samplings.
 
     Each control simulation is sampled multiple times with different random
     observer positions, creating "virtual" MCMC samples for clustering.
+
+    After centering positions on the box center, a random 3D rotation is applied
+    to further decorrelate samples from the same simulation.
 
     Uses config.mode3.random_seed for reproducibility across parameter sweeps.
     """
@@ -115,6 +152,15 @@ def load_random_control_data(config):
                 observer_relative = filtered_data[key]
                 box_coords = observer_relative + random_observer
                 filtered_data[key] = box_coords - box_center
+
+        # Apply random rotation around box center to decorrelate samples
+        rotation_matrix = random_rotation_matrix()
+        for key in ['SO/200_crit/CentreOfMass', 'BoundSubhalo/CentreOfMass', 'SO/500_crit/CentreOfMass']:
+            if key in filtered_data:
+                # Shift to origin, rotate, shift back to box center
+                positions_centered = filtered_data[key] - box_center
+                rotated_positions = positions_centered @ rotation_matrix.T
+                filtered_data[key] = rotated_positions + box_center
 
         mcmc_data[virtual_mcmc_id] = filtered_data
 
