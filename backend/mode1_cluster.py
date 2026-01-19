@@ -16,6 +16,8 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from dataclasses import dataclass
 
+from sklearn.cluster import DBSCAN
+
 try:
     import hdbscan
 except ImportError:
@@ -116,6 +118,33 @@ def run_hdbscan(
     return labels, probabilities, clusterer
 
 
+def run_dbscan(
+    positions: np.ndarray,
+    eps: float,
+    min_samples: int
+) -> Tuple[np.ndarray, np.ndarray, 'DBSCAN']:
+    """Run DBSCAN clustering on 3D positions.
+
+    Args:
+        positions: (N, 3) array of x,y,z coordinates in Mpc
+        eps: maximum distance between two samples for them to be neighbors (Mpc)
+        min_samples: minimum samples for core point
+
+    Returns:
+        labels: (N,) cluster labels (-1 for noise)
+        probabilities: (N,) membership probabilities (1.0 for clustered, 0.0 for noise)
+        clusterer: fitted DBSCAN object
+    """
+    clusterer = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+
+    labels = clusterer.fit_predict(positions)
+
+    # DBSCAN doesn't provide membership probabilities, use 1.0 for clustered points
+    probabilities = np.where(labels >= 0, 1.0, 0.0)
+
+    return labels, probabilities, clusterer
+
+
 def enforce_one_per_realization(
     labels: np.ndarray,
     probabilities: np.ndarray,
@@ -204,12 +233,18 @@ def enforce_one_per_realization(
     return labels, dropped_mask, ambiguity_rates
 
 
-def get_hdbscan_stability(clusterer: 'hdbscan.HDBSCAN', cluster_id: int) -> float:
+def get_hdbscan_stability(clusterer, cluster_id: int) -> float:
     """Extract HDBSCAN stability score for a cluster.
 
     The stability score measures how persistent a cluster is across
     different density thresholds in the condensed tree.
+
+    For DBSCAN clusterers, returns NaN since stability scores are not available.
     """
+    # DBSCAN doesn't have stability scores
+    if isinstance(clusterer, DBSCAN):
+        return np.nan
+
     try:
         # Get cluster persistence from condensed tree
         cluster_tree = clusterer.condensed_tree_.to_pandas()
@@ -228,7 +263,7 @@ def summarize_clusters(
     masses: np.ndarray,
     realization_ids: np.ndarray,
     combined_data: Dict,
-    clusterer: 'hdbscan.HDBSCAN',
+    clusterer,
     ambiguity_rates: Dict[int, float],
     n_realizations: int,
     existence_prob_stable: float,
@@ -364,13 +399,13 @@ def summarize_clusters(
 
 
 def run_mode1(config_path="config.toml", output_dir="output",
-              min_cluster_size=None, min_samples=None):
+              min_cluster_size=None, min_samples=None, algorithm=None, eps=None):
     """
-    Mode 1: Pure 3D HDBSCAN Posterior Clustering
+    Mode 1: Pure 3D Posterior Clustering (HDBSCAN or DBSCAN)
 
     Performs:
     1. Load data from MCMC samples
-    2. Run HDBSCAN clustering on 3D positions
+    2. Run clustering on 3D positions (HDBSCAN or DBSCAN)
     3. Enforce one-per-realization constraint
     4. Compute cluster summaries
     5. Save results to HDF5
@@ -379,21 +414,28 @@ def run_mode1(config_path="config.toml", output_dir="output",
         config_path: Path to config.toml
         output_dir: Output directory for results
         min_cluster_size: Override for HDBSCAN min_cluster_size
-        min_samples: Override for HDBSCAN min_samples
+        min_samples: Override for min_samples (HDBSCAN and DBSCAN)
+        algorithm: Override for clustering algorithm ('hdbscan' or 'dbscan')
+        eps: Override for DBSCAN eps parameter
     """
     config = load_config(config_path)
     ensure_output_dir(output_dir)
 
     # Override parameters if provided
+    if algorithm is not None:
+        config.mode1.clustering_algorithm = algorithm
     if min_cluster_size is not None:
         config.mode1.min_cluster_size = min_cluster_size
     if min_samples is not None:
         config.mode1.min_samples = min_samples
+    if eps is not None:
+        config.mode1.eps = eps
 
     n_realizations = config.mode1.mcmc_end - config.mode1.mcmc_start + 1
 
+    algo_name = config.mode1.clustering_algorithm.upper()
     print("=" * 60)
-    print("Mode 1: Pure 3D HDBSCAN Posterior Clustering")
+    print(f"Mode 1: Pure 3D {algo_name} Posterior Clustering")
     print("=" * 60)
 
     # Step 1: Load data
@@ -418,19 +460,29 @@ def run_mode1(config_path="config.toml", output_dir="output",
                 combined_data[key] = combined_data[key][valid_mass_mask]
         n_total_halos = len(positions)
 
-    # Step 2: Run HDBSCAN on 3D positions
-    epsilon_str = f", epsilon={config.mode1.cluster_selection_epsilon}" if config.mode1.cluster_selection_epsilon > 0 else ""
-    alpha_str = f", alpha={config.mode1.alpha}" if config.mode1.alpha != 1.0 else ""
-    print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode1.min_cluster_size}, "
-          f"min_samples={config.mode1.min_samples}, method='{config.mode1.cluster_selection_method}'{epsilon_str}{alpha_str})...")
-    labels, probabilities, clusterer = run_hdbscan(
-        positions,
-        config.mode1.min_cluster_size,
-        config.mode1.min_samples,
-        config.mode1.cluster_selection_method,
-        config.mode1.cluster_selection_epsilon,
-        config.mode1.alpha
-    )
+    # Step 2: Run clustering on 3D positions
+    if config.mode1.clustering_algorithm.lower() == 'dbscan':
+        print(f"\nStep 2: Running DBSCAN on 3D positions (eps={config.mode1.eps}, "
+              f"min_samples={config.mode1.min_samples})...")
+        labels, probabilities, clusterer = run_dbscan(
+            positions,
+            config.mode1.eps,
+            config.mode1.min_samples
+        )
+    else:
+        # Default to HDBSCAN
+        epsilon_str = f", epsilon={config.mode1.cluster_selection_epsilon}" if config.mode1.cluster_selection_epsilon > 0 else ""
+        alpha_str = f", alpha={config.mode1.alpha}" if config.mode1.alpha != 1.0 else ""
+        print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode1.min_cluster_size}, "
+              f"min_samples={config.mode1.min_samples}, method='{config.mode1.cluster_selection_method}'{epsilon_str}{alpha_str})...")
+        labels, probabilities, clusterer = run_hdbscan(
+            positions,
+            config.mode1.min_cluster_size,
+            config.mode1.min_samples,
+            config.mode1.cluster_selection_method,
+            config.mode1.cluster_selection_epsilon,
+            config.mode1.alpha
+        )
 
     n_clusters_raw = len(np.unique(labels[labels != -1]))
     n_noise_raw = np.sum(labels == -1)
@@ -493,8 +545,12 @@ def run_mode1(config_path="config.toml", output_dir="output",
 
     # Step 5: Save results
     print("\nStep 5: Saving results to HDF5...")
-    filename = (f"hdbscan_clusters_mcs_{config.mode1.min_cluster_size}_"
-                f"ms_{config.mode1.min_samples}_a_{config.mode1.alpha}.h5")
+    if config.mode1.clustering_algorithm.lower() == 'dbscan':
+        filename = (f"dbscan_clusters_eps_{config.mode1.eps}_"
+                    f"ms_{config.mode1.min_samples}.h5")
+    else:
+        filename = (f"hdbscan_clusters_mcs_{config.mode1.min_cluster_size}_"
+                    f"ms_{config.mode1.min_samples}_a_{config.mode1.alpha}.h5")
 
     save_hdbscan_clusters_to_hdf5(
         cluster_summaries=cluster_summaries,
@@ -507,14 +563,15 @@ def run_mode1(config_path="config.toml", output_dir="output",
         config=config,
         output_dir=output_dir,
         filename=filename,
-        sigma_diagnostics={'method': 'pure_3d'},
+        sigma_diagnostics={'method': 'pure_3d', 'algorithm': config.mode1.clustering_algorithm},
         sigma_logM=None,
         save_input_catalog=config.mode1.save_input_catalog,
         halo_indices=halo_indices
     )
 
+    algo_name = config.mode1.clustering_algorithm.upper()
     print("\n" + "=" * 60)
-    print("Mode 1 complete!")
+    print(f"Mode 1 ({algo_name}) complete!")
     print(f"Output file: {output_dir}/{filename}")
     print("=" * 60)
 
@@ -641,10 +698,14 @@ if __name__ == '__main__':
                         help="Path to config file")
     parser.add_argument("--output", default="output",
                         help="Output directory")
+    parser.add_argument("--algorithm", choices=['hdbscan', 'dbscan'], default=None,
+                        help="Clustering algorithm (overrides config file)")
     parser.add_argument("--min-cluster-size", type=int, default=None,
                         help="Override HDBSCAN min_cluster_size")
     parser.add_argument("--min-samples", type=int, default=None,
-                        help="Override HDBSCAN min_samples")
+                        help="Override min_samples")
+    parser.add_argument("--eps", type=float, default=None,
+                        help="Override DBSCAN eps parameter")
     args = parser.parse_args()
 
     if args.synthetic_test:
@@ -655,5 +716,7 @@ if __name__ == '__main__':
             config_path=args.config,
             output_dir=args.output,
             min_cluster_size=args.min_cluster_size,
-            min_samples=args.min_samples
+            min_samples=args.min_samples,
+            algorithm=args.algorithm,
+            eps=args.eps
         )

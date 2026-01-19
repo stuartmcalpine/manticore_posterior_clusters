@@ -24,7 +24,7 @@ hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
 hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
 
 [mode1]
-# Mode 1: Pure 3D HDBSCAN posterior clustering (positions only)
+# Mode 1: Pure 3D posterior clustering (positions only)
 # First MCMC sample index to include in clustering analysis
 mcmc_start = 0
 
@@ -37,7 +37,10 @@ m200_mass_cut = 0.5e14
 # Maximum distance from observer in Mpc for halo inclusion
 radius_cut = 400.0
 
-# HDBSCAN parameters
+# Clustering algorithm: 'hdbscan' or 'dbscan'
+clustering_algorithm = "hdbscan"
+
+# HDBSCAN parameters (used when clustering_algorithm = "hdbscan")
 # Minimum cluster size (~15% of N_realizations = 12 for 80 realizations)
 min_cluster_size = 12
 
@@ -55,6 +58,10 @@ cluster_selection_epsilon = 0.0
 # HDBSCAN alpha parameter: controls the mutual reachability distance scaling
 # Default is 1.0. Lower values make the algorithm more conservative (fewer clusters)
 alpha = 1.0
+
+# DBSCAN parameters (used when clustering_algorithm = "dbscan")
+# Epsilon: maximum distance between two samples for them to be considered neighbors (Mpc)
+eps = 5.0
 
 # Stability classification thresholds
 # Minimum existence probability for 'stable' status
@@ -84,7 +91,7 @@ min_match_rate = 0.8
 distance_tolerance_rel = 0.2
 
 [mode3]
-# Mode 3: Random control simulation analysis (uses same HDBSCAN as mode1)
+# Mode 3: Random control simulation analysis (uses same clustering as mode1)
 # Base directory containing the control (unconstrained) simulation data
 basedir = "/cosma7/data/dp004/rttw52/manticore_data/production_runs/v2b/resimulations/CONTROL_L1000/R1024"
 
@@ -103,7 +110,10 @@ radius_cut = 400.0
 # Number of random observer position samplings per control simulation
 num_samplings = 8
 
-# HDBSCAN parameters (same as mode1)
+# Clustering algorithm: 'hdbscan' or 'dbscan'
+clustering_algorithm = "hdbscan"
+
+# HDBSCAN parameters (used when clustering_algorithm = "hdbscan")
 # Default: ~15% of total virtual realizations (10 sims * 8 samplings = 80 -> 12)
 min_cluster_size = 12
 
@@ -118,6 +128,10 @@ cluster_selection_epsilon = 0.0
 # HDBSCAN alpha parameter: controls the mutual reachability distance scaling
 # Default is 1.0. Lower values make the algorithm more conservative (fewer clusters)
 alpha = 1.0
+
+# DBSCAN parameters (used when clustering_algorithm = "dbscan")
+# Epsilon: maximum distance between two samples for them to be considered neighbors (Mpc)
+eps = 5.0
 
 # Random seed for reproducible observer positions across parameter sweeps
 # Using the same seed ensures fair comparison when varying min_cluster_size/min_samples

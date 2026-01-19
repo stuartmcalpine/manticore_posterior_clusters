@@ -19,12 +19,16 @@ class Mode1Config:
     mcmc_end: int
     m200_mass_cut: float
     radius_cut: float
+    # Clustering algorithm: 'hdbscan' or 'dbscan'
+    clustering_algorithm: str
     # HDBSCAN parameters
     min_cluster_size: int
     min_samples: int
     cluster_selection_method: str
     cluster_selection_epsilon: float  # 0.0 = off, >0 = distance threshold for merging
     alpha: float  # HDBSCAN alpha parameter for mutual reachability distance
+    # DBSCAN parameters
+    eps: float  # DBSCAN epsilon (neighborhood radius in Mpc)
     # Stability thresholds
     existence_prob_stable: float
     existence_prob_tentative: float
@@ -47,11 +51,15 @@ class Mode3Config:
     m200_mass_cut: float
     radius_cut: float
     num_samplings: int
+    # Clustering algorithm: 'hdbscan' or 'dbscan'
+    clustering_algorithm: str
     # HDBSCAN parameters (same as mode1)
     min_cluster_size: int
     min_samples: int
     cluster_selection_epsilon: float  # 0.0 = off, >0 = distance threshold for merging
     alpha: float  # HDBSCAN alpha parameter for mutual reachability distance
+    # DBSCAN parameters
+    eps: float  # DBSCAN epsilon (neighborhood radius in Mpc)
     # Random seed for reproducible observer positions across parameter sweeps
     random_seed: int
     # Save all input halos to HDF5
@@ -110,10 +118,12 @@ def load_config(config_path: str = "config.toml") -> Config:
         m200_mass_cut=float(data['mode3']['m200_mass_cut']),
         radius_cut=float(data['mode3']['radius_cut']),
         num_samplings=int(data['mode3']['num_samplings']),
+        clustering_algorithm=str(data['mode3'].get('clustering_algorithm', 'hdbscan')),
         min_cluster_size=int(data['mode3'].get('min_cluster_size', default_mode3_min_cluster_size)),
         min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size)),
         cluster_selection_epsilon=float(data['mode3'].get('cluster_selection_epsilon', 0.0)),
         alpha=float(data['mode3'].get('alpha', 1.0)),
+        eps=float(data['mode3'].get('eps', 5.0)),
         random_seed=int(data['mode3'].get('random_seed', 42)),
         save_input_catalog=bool(data['mode3'].get('save_input_catalog', False))
     )
@@ -137,12 +147,16 @@ def load_config(config_path: str = "config.toml") -> Config:
         mcmc_end=int(data['mode1']['mcmc_end']),
         m200_mass_cut=float(data['mode1']['m200_mass_cut']),
         radius_cut=float(data['mode1']['radius_cut']),
+        # Clustering algorithm
+        clustering_algorithm=str(data['mode1'].get('clustering_algorithm', 'hdbscan')),
         # HDBSCAN parameters
         min_cluster_size=int(data['mode1'].get('min_cluster_size', default_min_cluster_size)),
         min_samples=int(data['mode1'].get('min_samples', default_min_cluster_size)),
         cluster_selection_method=str(data['mode1'].get('cluster_selection_method', 'eom')),
         cluster_selection_epsilon=float(data['mode1'].get('cluster_selection_epsilon', 0.0)),
         alpha=float(data['mode1'].get('alpha', 1.0)),
+        # DBSCAN parameters
+        eps=float(data['mode1'].get('eps', 5.0)),
         # Stability thresholds
         existence_prob_stable=float(data['mode1'].get('existence_prob_stable', 0.5)),
         existence_prob_tentative=float(data['mode1'].get('existence_prob_tentative', 0.2)),

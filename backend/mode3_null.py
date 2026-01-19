@@ -16,6 +16,8 @@ import numpy as np
 import os
 from typing import Tuple, Dict, List
 
+from sklearn.cluster import DBSCAN
+
 try:
     import hdbscan
 except ImportError:
@@ -216,6 +218,33 @@ def run_hdbscan(
     return labels, probabilities, clusterer
 
 
+def run_dbscan(
+    positions: np.ndarray,
+    eps: float,
+    min_samples: int
+) -> Tuple[np.ndarray, np.ndarray, 'DBSCAN']:
+    """Run DBSCAN clustering on 3D positions.
+
+    Args:
+        positions: (N, 3) array of x,y,z coordinates in Mpc
+        eps: maximum distance between two samples for them to be neighbors (Mpc)
+        min_samples: minimum samples for core point
+
+    Returns:
+        labels: (N,) cluster labels (-1 for noise)
+        probabilities: (N,) membership probabilities (1.0 for clustered, 0.0 for noise)
+        clusterer: fitted DBSCAN object
+    """
+    clusterer = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+
+    labels = clusterer.fit_predict(positions)
+
+    # DBSCAN doesn't provide membership probabilities, use 1.0 for clustered points
+    probabilities = np.where(labels >= 0, 1.0, 0.0)
+
+    return labels, probabilities, clusterer
+
+
 def enforce_one_per_realization(
     labels: np.ndarray,
     probabilities: np.ndarray,
@@ -284,8 +313,15 @@ def enforce_one_per_realization(
     return labels, dropped_mask, ambiguity_rates
 
 
-def get_hdbscan_stability(clusterer: 'hdbscan.HDBSCAN', cluster_id: int) -> float:
-    """Extract HDBSCAN stability score for a cluster."""
+def get_hdbscan_stability(clusterer, cluster_id: int) -> float:
+    """Extract HDBSCAN stability score for a cluster.
+
+    For DBSCAN clusterers, returns NaN since stability scores are not available.
+    """
+    # DBSCAN doesn't have stability scores
+    if isinstance(clusterer, DBSCAN):
+        return np.nan
+
     try:
         cluster_tree = clusterer.condensed_tree_.to_pandas()
         cluster_data = cluster_tree[cluster_tree['child'] == cluster_id]
@@ -303,7 +339,7 @@ def summarize_clusters(
     masses: np.ndarray,
     realization_ids: np.ndarray,
     combined_data: Dict,
-    clusterer: 'hdbscan.HDBSCAN',
+    clusterer,
     ambiguity_rates: Dict[int, float],
     n_realizations: int,
     existence_prob_stable: float,
@@ -413,13 +449,13 @@ def summarize_clusters(
 
 
 def run_mode3(config_path="config.toml", output_dir="output",
-              min_cluster_size=None, min_samples=None):
+              min_cluster_size=None, min_samples=None, algorithm=None, eps=None):
     """
-    Mode 3: Random Control Simulation Analysis with HDBSCAN
+    Mode 3: Random Control Simulation Analysis (HDBSCAN or DBSCAN)
 
     Performs:
     1. Load control simulations with random observer positions
-    2. Run HDBSCAN clustering on 3D positions
+    2. Run clustering on 3D positions (HDBSCAN or DBSCAN)
     3. Enforce one-per-realization constraint
     4. Compute cluster summaries
     5. Save results to HDF5
@@ -428,22 +464,29 @@ def run_mode3(config_path="config.toml", output_dir="output",
         config_path: Path to config.toml
         output_dir: Output directory for results
         min_cluster_size: Override for HDBSCAN min_cluster_size
-        min_samples: Override for HDBSCAN min_samples
+        min_samples: Override for min_samples (HDBSCAN and DBSCAN)
+        algorithm: Override for clustering algorithm ('hdbscan' or 'dbscan')
+        eps: Override for DBSCAN eps parameter
     """
     config = load_config(config_path)
     ensure_output_dir(output_dir)
 
     # Override parameters if provided
+    if algorithm is not None:
+        config.mode3.clustering_algorithm = algorithm
     if min_cluster_size is not None:
         config.mode3.min_cluster_size = min_cluster_size
     if min_samples is not None:
         config.mode3.min_samples = min_samples
+    if eps is not None:
+        config.mode3.eps = eps
 
     n_real_sims = config.mode3.mcmc_end - config.mode3.mcmc_start + 1
     n_realizations = n_real_sims * config.mode3.num_samplings
 
+    algo_name = config.mode3.clustering_algorithm.upper()
     print("=" * 60)
-    print("Mode 3: Random Control Simulation Analysis (HDBSCAN)")
+    print(f"Mode 3: Random Control Simulation Analysis ({algo_name})")
     print("=" * 60)
     print(f"\nControl simulations: {config.mode3.mcmc_start} to {config.mode3.mcmc_end} ({n_real_sims} sims)")
     print(f"Samplings per simulation: {config.mode3.num_samplings}")
@@ -481,19 +524,29 @@ def run_mode3(config_path="config.toml", output_dir="output",
                 combined_data[key] = combined_data[key][valid_mass_mask]
         n_total_halos = len(positions)
 
-    # Step 2: Run HDBSCAN
-    epsilon_str = f", epsilon={config.mode3.cluster_selection_epsilon}" if config.mode3.cluster_selection_epsilon > 0 else ""
-    alpha_str = f", alpha={config.mode3.alpha}" if config.mode3.alpha != 1.0 else ""
-    print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode3.min_cluster_size}, "
-          f"min_samples={config.mode3.min_samples}{epsilon_str}{alpha_str})...")
-    labels, probabilities, clusterer = run_hdbscan(
-        positions,
-        config.mode3.min_cluster_size,
-        config.mode3.min_samples,
-        'eom',
-        config.mode3.cluster_selection_epsilon,
-        config.mode3.alpha
-    )
+    # Step 2: Run clustering on 3D positions
+    if config.mode3.clustering_algorithm.lower() == 'dbscan':
+        print(f"\nStep 2: Running DBSCAN on 3D positions (eps={config.mode3.eps}, "
+              f"min_samples={config.mode3.min_samples})...")
+        labels, probabilities, clusterer = run_dbscan(
+            positions,
+            config.mode3.eps,
+            config.mode3.min_samples
+        )
+    else:
+        # Default to HDBSCAN
+        epsilon_str = f", epsilon={config.mode3.cluster_selection_epsilon}" if config.mode3.cluster_selection_epsilon > 0 else ""
+        alpha_str = f", alpha={config.mode3.alpha}" if config.mode3.alpha != 1.0 else ""
+        print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode3.min_cluster_size}, "
+              f"min_samples={config.mode3.min_samples}{epsilon_str}{alpha_str})...")
+        labels, probabilities, clusterer = run_hdbscan(
+            positions,
+            config.mode3.min_cluster_size,
+            config.mode3.min_samples,
+            'eom',
+            config.mode3.cluster_selection_epsilon,
+            config.mode3.alpha
+        )
 
     n_clusters_raw = len(np.unique(labels[labels != -1]))
     n_noise_raw = np.sum(labels == -1)
@@ -549,7 +602,10 @@ def run_mode3(config_path="config.toml", output_dir="output",
 
     # Step 5: Save results
     print("\nStep 5: Saving results to HDF5...")
-    filename = f"random_control_clusters_mcs_{config.mode3.min_cluster_size}_ms_{config.mode3.min_samples}_a_{config.mode3.alpha}.h5"
+    if config.mode3.clustering_algorithm.lower() == 'dbscan':
+        filename = f"dbscan_random_control_clusters_eps_{config.mode3.eps}_ms_{config.mode3.min_samples}.h5"
+    else:
+        filename = f"hdbscan_random_control_clusters_mcs_{config.mode3.min_cluster_size}_ms_{config.mode3.min_samples}_a_{config.mode3.alpha}.h5"
 
     # Create a mock mode1 config for save_hdbscan_clusters_to_hdf5
     from dataclasses import dataclass
@@ -560,10 +616,12 @@ def run_mode3(config_path="config.toml", output_dir="output",
         mcmc_end: int = n_realizations - 1
         m200_mass_cut: float = config.mode3.m200_mass_cut
         radius_cut: float = config.mode3.radius_cut
+        clustering_algorithm: str = config.mode3.clustering_algorithm
         min_cluster_size: int = config.mode3.min_cluster_size
         min_samples: int = config.mode3.min_samples
         cluster_selection_method: str = 'eom'
         alpha: float = config.mode3.alpha
+        eps: float = config.mode3.eps
         existence_prob_stable: float = 0.5
         existence_prob_tentative: float = 0.2
         save_input_catalog: bool = config.mode3.save_input_catalog
@@ -581,14 +639,15 @@ def run_mode3(config_path="config.toml", output_dir="output",
         config=config,
         output_dir=output_dir,
         filename=filename,
-        sigma_diagnostics={'method': 'pure_3d'},
+        sigma_diagnostics={'method': 'pure_3d', 'algorithm': config.mode3.clustering_algorithm},
         sigma_logM=None,
         save_input_catalog=config.mode3.save_input_catalog,
         halo_indices=halo_indices
     )
 
+    algo_name = config.mode3.clustering_algorithm.upper()
     print("\n" + "=" * 60)
-    print("Mode 3 complete!")
+    print(f"Mode 3 ({algo_name}) complete!")
     print(f"Output file: {output_dir}/{filename}")
     print("=" * 60)
 
