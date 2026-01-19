@@ -842,6 +842,7 @@ def save_hdbscan_clusters_to_hdf5(
         meta_grp.attrs['min_cluster_size'] = config.mode1.min_cluster_size
         meta_grp.attrs['min_samples'] = config.mode1.min_samples
         meta_grp.attrs['cluster_selection_method'] = config.mode1.cluster_selection_method
+        meta_grp.attrs['alpha'] = config.mode1.alpha
         meta_grp.attrs['n_realizations'] = n_realizations
         meta_grp.attrs['n_total_halos'] = n_total_halos
         meta_grp.attrs['n_clustered'] = n_clustered

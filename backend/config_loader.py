@@ -24,6 +24,7 @@ class Mode1Config:
     min_samples: int
     cluster_selection_method: str
     cluster_selection_epsilon: float  # 0.0 = off, >0 = distance threshold for merging
+    alpha: float  # HDBSCAN alpha parameter for mutual reachability distance
     # Stability thresholds
     existence_prob_stable: float
     existence_prob_tentative: float
@@ -50,6 +51,7 @@ class Mode3Config:
     min_cluster_size: int
     min_samples: int
     cluster_selection_epsilon: float  # 0.0 = off, >0 = distance threshold for merging
+    alpha: float  # HDBSCAN alpha parameter for mutual reachability distance
     # Random seed for reproducible observer positions across parameter sweeps
     random_seed: int
     # Save all input halos to HDF5
@@ -111,6 +113,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         min_cluster_size=int(data['mode3'].get('min_cluster_size', default_mode3_min_cluster_size)),
         min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size)),
         cluster_selection_epsilon=float(data['mode3'].get('cluster_selection_epsilon', 0.0)),
+        alpha=float(data['mode3'].get('alpha', 1.0)),
         random_seed=int(data['mode3'].get('random_seed', 42)),
         save_input_catalog=bool(data['mode3'].get('save_input_catalog', False))
     )
@@ -139,6 +142,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         min_samples=int(data['mode1'].get('min_samples', default_min_cluster_size)),
         cluster_selection_method=str(data['mode1'].get('cluster_selection_method', 'eom')),
         cluster_selection_epsilon=float(data['mode1'].get('cluster_selection_epsilon', 0.0)),
+        alpha=float(data['mode1'].get('alpha', 1.0)),
         # Stability thresholds
         existence_prob_stable=float(data['mode1'].get('existence_prob_stable', 0.5)),
         existence_prob_tentative=float(data['mode1'].get('existence_prob_tentative', 0.2)),

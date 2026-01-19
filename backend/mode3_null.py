@@ -176,7 +176,8 @@ def run_hdbscan(
     min_cluster_size: int,
     min_samples: int,
     cluster_selection_method: str = 'eom',
-    cluster_selection_epsilon: float = 0.0
+    cluster_selection_epsilon: float = 0.0,
+    alpha: float = 1.0
 ) -> Tuple[np.ndarray, np.ndarray, 'hdbscan.HDBSCAN']:
     """Run HDBSCAN clustering on 3D positions.
 
@@ -186,6 +187,7 @@ def run_hdbscan(
         min_samples: minimum samples for core point
         cluster_selection_method: 'eom' (excess of mass) or 'leaf'
         cluster_selection_epsilon: distance threshold for cluster merging (0.0 = off)
+        alpha: HDBSCAN alpha parameter for mutual reachability distance (default 1.0)
 
     Returns:
         labels: (N,) cluster labels (-1 for noise)
@@ -198,7 +200,8 @@ def run_hdbscan(
         'min_samples': min_samples,
         'cluster_selection_method': cluster_selection_method,
         'metric': 'euclidean',
-        'prediction_data': True
+        'prediction_data': True,
+        'alpha': alpha
     }
 
     # Only add epsilon if > 0 (0 means off/default behavior)
@@ -480,14 +483,16 @@ def run_mode3(config_path="config.toml", output_dir="output",
 
     # Step 2: Run HDBSCAN
     epsilon_str = f", epsilon={config.mode3.cluster_selection_epsilon}" if config.mode3.cluster_selection_epsilon > 0 else ""
+    alpha_str = f", alpha={config.mode3.alpha}" if config.mode3.alpha != 1.0 else ""
     print(f"\nStep 2: Running HDBSCAN on 3D positions (min_cluster_size={config.mode3.min_cluster_size}, "
-          f"min_samples={config.mode3.min_samples}{epsilon_str})...")
+          f"min_samples={config.mode3.min_samples}{epsilon_str}{alpha_str})...")
     labels, probabilities, clusterer = run_hdbscan(
         positions,
         config.mode3.min_cluster_size,
         config.mode3.min_samples,
         'eom',
-        config.mode3.cluster_selection_epsilon
+        config.mode3.cluster_selection_epsilon,
+        config.mode3.alpha
     )
 
     n_clusters_raw = len(np.unique(labels[labels != -1]))
@@ -544,7 +549,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
 
     # Step 5: Save results
     print("\nStep 5: Saving results to HDF5...")
-    filename = f"random_control_clusters_mcs_{config.mode3.min_cluster_size}_ms_{config.mode3.min_samples}.h5"
+    filename = f"random_control_clusters_mcs_{config.mode3.min_cluster_size}_ms_{config.mode3.min_samples}_a_{config.mode3.alpha}.h5"
 
     # Create a mock mode1 config for save_hdbscan_clusters_to_hdf5
     from dataclasses import dataclass
@@ -558,6 +563,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
         min_cluster_size: int = config.mode3.min_cluster_size
         min_samples: int = config.mode3.min_samples
         cluster_selection_method: str = 'eom'
+        alpha: float = config.mode3.alpha
         existence_prob_stable: float = 0.5
         existence_prob_tentative: float = 0.2
         save_input_catalog: bool = config.mode3.save_input_catalog
