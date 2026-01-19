@@ -503,7 +503,9 @@ def run_mode1(config_path="config.toml", output_dir="output",
         output_dir=output_dir,
         filename=filename,
         sigma_diagnostics={'method': 'pure_3d'},
-        sigma_logM=None
+        sigma_logM=None,
+        save_input_catalog=config.mode1.save_input_catalog,
+        halo_indices=halo_indices
     )
 
     print("\n" + "=" * 60)

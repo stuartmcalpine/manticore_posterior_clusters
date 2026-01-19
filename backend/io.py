@@ -773,7 +773,9 @@ def save_hdbscan_clusters_to_hdf5(
     output_dir: str,
     filename: str,
     sigma_diagnostics: Dict = None,
-    sigma_logM: float = None
+    sigma_logM: float = None,
+    save_input_catalog: bool = False,
+    halo_indices: np.ndarray = None
 ) -> None:
     """Save HDBSCAN clustering results to HDF5.
 
@@ -815,6 +817,12 @@ def save_hdbscan_clusters_to_hdf5(
         label (N,) - cluster ID or -1
         membership_prob (N,)
         dropped_by_enforcement (N,) - bool
+
+    /input_catalog (optional, if save_input_catalog=True)
+        positions (N, 3) - x,y,z coordinates
+        mcmc_ids (N,) - MCMC realization IDs
+        cluster_ids (N,) - assigned cluster ID (-1 for noise)
+        halo_indices (N,) - original halo indices within each realization (if provided)
     """
     filepath = os.path.join(output_dir, filename)
     n_realizations = config.mode1.mcmc_end - config.mode1.mcmc_start + 1
@@ -947,6 +955,15 @@ def save_hdbscan_clusters_to_hdf5(
         assignments_grp.create_dataset('label', data=labels)
         assignments_grp.create_dataset('membership_prob', data=probabilities)
         assignments_grp.create_dataset('dropped_by_enforcement', data=dropped_mask)
+
+        # Input catalog group (optional - all input halos including unclustered)
+        if save_input_catalog:
+            input_grp = f.create_group('input_catalog')
+            input_grp.create_dataset('positions', data=positions)
+            input_grp.create_dataset('mcmc_ids', data=realization_ids)
+            input_grp.create_dataset('cluster_ids', data=labels)
+            if halo_indices is not None:
+                input_grp.create_dataset('halo_indices', data=halo_indices)
 
     print(f"\nHDBSCAN results saved to {filepath}")
     print(f"  Total clusters: {n_clusters}")

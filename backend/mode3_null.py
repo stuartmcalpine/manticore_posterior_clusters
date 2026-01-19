@@ -459,6 +459,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
     positions = combined_data['SO/200_crit/CentreOfMass']
     masses = combined_data['SO/200_crit/TotalMass']
     realization_ids = np.array([p['mcmc_id'] for p in halo_provenance], dtype=np.int32)
+    halo_indices = np.array([p['original_index'] for p in halo_provenance], dtype=np.int32)
 
     n_total_halos = len(positions)
     print(f"  Total halos loaded: {n_total_halos}")
@@ -471,6 +472,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
         positions = positions[valid_mass_mask]
         masses = masses[valid_mass_mask]
         realization_ids = realization_ids[valid_mass_mask]
+        halo_indices = halo_indices[valid_mass_mask]
         for key in combined_data:
             if isinstance(combined_data[key], np.ndarray) and len(combined_data[key]) == n_total_halos:
                 combined_data[key] = combined_data[key][valid_mass_mask]
@@ -558,6 +560,7 @@ def run_mode3(config_path="config.toml", output_dir="output",
         cluster_selection_method: str = 'eom'
         existence_prob_stable: float = 0.5
         existence_prob_tentative: float = 0.2
+        save_input_catalog: bool = config.mode3.save_input_catalog
 
     config.mode1 = Mode1Mock()
 
@@ -573,7 +576,9 @@ def run_mode3(config_path="config.toml", output_dir="output",
         output_dir=output_dir,
         filename=filename,
         sigma_diagnostics={'method': 'pure_3d'},
-        sigma_logM=None
+        sigma_logM=None,
+        save_input_catalog=config.mode3.save_input_catalog,
+        halo_indices=halo_indices
     )
 
     print("\n" + "=" * 60)

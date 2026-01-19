@@ -27,6 +27,8 @@ class Mode1Config:
     # Stability thresholds
     existence_prob_stable: float
     existence_prob_tentative: float
+    # Save all input halos to HDF5
+    save_input_catalog: bool
 
 @dataclass
 class Mode2Config:
@@ -50,6 +52,8 @@ class Mode3Config:
     cluster_selection_epsilon: float  # 0.0 = off, >0 = distance threshold for merging
     # Random seed for reproducible observer positions across parameter sweeps
     random_seed: int
+    # Save all input halos to HDF5
+    save_input_catalog: bool
 
 @dataclass
 class Mode4Config:
@@ -107,7 +111,8 @@ def load_config(config_path: str = "config.toml") -> Config:
         min_cluster_size=int(data['mode3'].get('min_cluster_size', default_mode3_min_cluster_size)),
         min_samples=int(data['mode3'].get('min_samples', default_mode3_min_cluster_size)),
         cluster_selection_epsilon=float(data['mode3'].get('cluster_selection_epsilon', 0.0)),
-        random_seed=int(data['mode3'].get('random_seed', 42))
+        random_seed=int(data['mode3'].get('random_seed', 42)),
+        save_input_catalog=bool(data['mode3'].get('save_input_catalog', False))
     )
 
     mode4_config = Mode4Config(
@@ -136,7 +141,9 @@ def load_config(config_path: str = "config.toml") -> Config:
         cluster_selection_epsilon=float(data['mode1'].get('cluster_selection_epsilon', 0.0)),
         # Stability thresholds
         existence_prob_stable=float(data['mode1'].get('existence_prob_stable', 0.5)),
-        existence_prob_tentative=float(data['mode1'].get('existence_prob_tentative', 0.2))
+        existence_prob_tentative=float(data['mode1'].get('existence_prob_tentative', 0.2)),
+        # Save input catalog
+        save_input_catalog=bool(data['mode1'].get('save_input_catalog', False))
     )
 
     return Config(

@@ -59,6 +59,10 @@ existence_prob_stable = 0.5
 # Minimum existence probability for 'tentative' status (below = 'rare')
 existence_prob_tentative = 0.2
 
+# Save all input halos (concatenated catalog) to HDF5 output
+# When true, saves positions, mcmc_ids, and cluster labels for all halos (not just clustered ones)
+save_input_catalog = false
+
 [mode2]
 # Earliest snapshot to trace halos back to (lower = further back in time)
 target_snapshot = 10
@@ -110,6 +114,10 @@ cluster_selection_epsilon = 0.0
 # Random seed for reproducible observer positions across parameter sweeps
 # Using the same seed ensures fair comparison when varying min_cluster_size/min_samples
 random_seed = 42
+
+# Save all input halos (concatenated catalog) to HDF5 output
+# When true, saves positions, mcmc_ids, and cluster labels for all halos (not just clustered ones)
+save_input_catalog = false
 
 [mode4]
 # Base directory containing the control simulation data for tracing
