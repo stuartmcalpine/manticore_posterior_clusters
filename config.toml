@@ -18,7 +18,7 @@ boxsize = 1000.0
 final_snapshot = 77
 
 # Subdirectory path within each mcmc_X folder containing HDF5 halo catalogs
-hdf5_subdir = "soap/SOAP_uncompressed/HBTplus"
+hdf5_subdir = "soap/SOAP/HBTplus"
 
 # Filename pattern for HDF5 snapshot files ({snap_num:04d} is replaced with snapshot number)
 hdf5_filename_pattern = "halo_properties_{snap_num:04d}.hdf5"
@@ -32,13 +32,13 @@ mcmc_start = 0
 mcmc_end = 79
 
 # Minimum M200 halo mass in solar masses for inclusion in clustering
-m200_mass_cut = 0.5e14
+m200_mass_cut = 0.7e14
 
 # Maximum distance from observer in Mpc for halo inclusion
 radius_cut = 400.0
 
 # Clustering algorithm: 'hdbscan' or 'dbscan'
-clustering_algorithm = "hdbscan"
+clustering_algorithm = "dbscan"
 
 # HDBSCAN parameters (used when clustering_algorithm = "hdbscan")
 # Minimum cluster size (~15% of N_realizations = 12 for 80 realizations)
@@ -102,7 +102,7 @@ mcmc_start = 0
 mcmc_end = 9
 
 # Minimum M200 halo mass in solar masses for control simulations
-m200_mass_cut = 0.5e14
+m200_mass_cut = 0.7e14
 
 # Maximum distance from observer in Mpc for control simulations
 radius_cut = 400.0
@@ -152,7 +152,7 @@ mcmc_start = 0
 mcmc_end = 9
 
 # Minimum M200 halo mass in solar masses for control halo tracing
-m200_mass_cut = 0.5e14
+m200_mass_cut = 0.7e14
 
 # Maximum distance from observer in Mpc for control halo tracing
 radius_cut = 400.0
