@@ -111,7 +111,7 @@ radius_cut = 400.0
 num_samplings = 8
 
 # Clustering algorithm: 'hdbscan' or 'dbscan'
-clustering_algorithm = "hdbscan"
+clustering_algorithm = "dbscan"
 
 # HDBSCAN parameters (used when clustering_algorithm = "hdbscan")
 # Default: ~15% of total virtual realizations (10 sims * 8 samplings = 80 -> 12)
