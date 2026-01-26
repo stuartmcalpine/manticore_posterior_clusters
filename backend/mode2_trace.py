@@ -1,10 +1,55 @@
 from mpi4py import MPI
 import numpy as np
 import os
+from glob import glob
 from pymanticore.swift_analysis import SOAPData
 from collections import defaultdict
 from backend.config_loader import load_config
 from backend.io import load_clusters_from_hdf5, save_halo_traces_to_hdf5
+
+
+def _find_cluster_file(output_dir, config):
+    """Find the appropriate cluster file based on what exists.
+
+    Tries filenames in order of preference:
+    1. New HDBSCAN format: hdbscan_clusters_mcs_{mcs}_ms_{ms}_a_{alpha}.h5
+    2. New DBSCAN format: dbscan_clusters_eps_{eps}_ms_{ms}.h5
+    3. Legacy format: clusters_eps_{eps_str}_min_samples_{ms}.h5
+
+    Returns the filename (not full path) if found, or raises FileNotFoundError.
+    """
+    tried_files = []
+
+    # Try new HDBSCAN format first
+    hdbscan_file = f"hdbscan_clusters_mcs_{config.mode1.min_cluster_size}_ms_{config.mode1.min_samples}_a_{config.mode1.alpha}.h5"
+    tried_files.append(hdbscan_file)
+    if os.path.exists(os.path.join(output_dir, hdbscan_file)):
+        return hdbscan_file
+
+    # Try to find any HDBSCAN file with matching mcs and ms (alpha may vary)
+    hdbscan_pattern = f"hdbscan_clusters_mcs_{config.mode1.min_cluster_size}_ms_{config.mode1.min_samples}_a_*.h5"
+    matches = glob(os.path.join(output_dir, hdbscan_pattern))
+    if matches:
+        return os.path.basename(matches[0])
+
+    # Try new DBSCAN format
+    dbscan_file = f"dbscan_clusters_eps_{config.mode1.eps}_ms_{config.mode1.min_samples}.h5"
+    tried_files.append(dbscan_file)
+    if os.path.exists(os.path.join(output_dir, dbscan_file)):
+        return dbscan_file
+
+    # Try legacy format
+    eps_str = str(config.mode1.eps).replace('.', 'p')
+    legacy_file = f"clusters_eps_{eps_str}_min_samples_{config.mode1.min_samples}.h5"
+    tried_files.append(legacy_file)
+    if os.path.exists(os.path.join(output_dir, legacy_file)):
+        return legacy_file
+
+    raise FileNotFoundError(
+        f"No cluster file found in {output_dir}. "
+        f"Tried: {', '.join(tried_files)}. "
+        f"Run Mode 1 first to generate cluster data."
+    )
 
 class HaloTracer:
     def __init__(self, basedir, observer_coords, rank=0, hdf5_subdir="soap/SOAP_uncompressed/HBTplus",
@@ -240,9 +285,9 @@ def run_mode2(config_path="config.toml", output_dir="output"):
     
     if rank == 0:
         print("Loading clusters from Mode 1...")
-        # Convert eps to filename format (2.5 -> "2p5")
-        eps_str = str(config.mode1.eps).replace('.', 'p')
-        filename = f"clusters_eps_{eps_str}_min_samples_{config.mode1.min_samples}.h5"
+        # Find the cluster file (supports new HDBSCAN, new DBSCAN, and legacy formats)
+        filename = _find_cluster_file(output_dir, config)
+        print(f"Found cluster file: {filename}")
 
         clusters, cluster_metadata = load_clusters_from_hdf5(output_dir, filename=filename, minimal=False)
         print(f"Loaded {len(clusters)} clusters")

@@ -156,19 +156,144 @@ def save_clusters_to_hdf5(stable_haloes, positions, m200_masses, halo_provenance
             for key, data in cluster['member_data'].items():
                 assoc_grp.create_dataset(key.replace('/', '_'), data=data)
 
+def _load_clusters_from_flat_format_for_mode2(f, min_m200_mass, minimal):
+    """Load clusters from new v2 flat HDBSCAN format and reconstruct legacy structure for Mode 2.
+
+    The new format stores data in flat arrays with CSR-style indexing for members.
+    This function reconstructs the nested structure expected by Mode 2's extract_target_haloes().
+    """
+    clusters = []
+    summary = f['summary']
+
+    # Check if summary has any clusters
+    if 'cluster_id' not in summary:
+        return []
+
+    # Read summary arrays
+    cluster_ids = summary['cluster_id'][:]
+    n_members_arr = summary['n_members'][:]
+    center_xyz = summary['center_xyz'][:]
+    mean_m200_masses = summary['mean_m200_mass'][:]
+
+    # Read optional summary fields with defaults
+    position_stds = summary['position_std'][:] if 'position_std' in summary else np.full((len(cluster_ids), 3), np.nan)
+    m200_mass_stds = summary['m200_mass_std'][:] if 'm200_mass_std' in summary else np.full(len(cluster_ids), np.nan)
+    log10_m200_mass_stds = summary['log10_m200_mass_std'][:] if 'log10_m200_mass_std' in summary else np.full(len(cluster_ids), np.nan)
+    log10_m500_stds = summary['log10_m500_std'][:] if 'log10_m500_std' in summary else np.full(len(cluster_ids), np.nan)
+    mean_subhalo_masses = summary['mean_subhalo_mass'][:] if 'mean_subhalo_mass' in summary else np.full(len(cluster_ids), np.nan)
+    subhalo_mass_stds = summary['subhalo_mass_std'][:] if 'subhalo_mass_std' in summary else np.full(len(cluster_ids), np.nan)
+    mean_m500s = summary['mean_m500'][:] if 'mean_m500' in summary else np.full(len(cluster_ids), np.nan)
+    m500_stds = summary['m500_std'][:] if 'm500_std' in summary else np.full(len(cluster_ids), np.nan)
+    axis_ratio_bas = summary['axis_ratio_ba'][:] if 'axis_ratio_ba' in summary else np.full(len(cluster_ids), np.nan)
+    axis_ratio_cas = summary['axis_ratio_ca'][:] if 'axis_ratio_ca' in summary else np.full(len(cluster_ids), np.nan)
+    asphericities = summary['asphericity'][:] if 'asphericity' in summary else np.full(len(cluster_ids), np.nan)
+    prolatenesses = summary['prolateness'][:] if 'prolateness' in summary else np.full(len(cluster_ids), np.nan)
+
+    # Read member index (CSR-style)
+    member_index = f['member_index']
+    offsets = member_index['offsets'][:]
+
+    # Read all member data arrays
+    member_data_grp = f['member_data']
+    member_arrays = {}
+    for key in member_data_grp.keys():
+        member_arrays[key] = member_data_grp[key][:]
+
+    # Build clusters
+    for i in range(len(cluster_ids)):
+        # Apply mass filter
+        if mean_m200_masses[i] < min_m200_mass:
+            continue
+
+        start = offsets[i]
+        end = offsets[i + 1]
+
+        # Reconstruct member_data dict with slash-separated keys
+        member_data = {}
+        for underscore_key, data in member_arrays.items():
+            # Convert underscore to slash for property names
+            slash_key = underscore_key.replace('_', '/')
+
+            # Handle special key mappings for Mode 2 compatibility
+            if underscore_key == 'realization_ids':
+                slash_key = 'mcmc/id'
+            elif underscore_key == 'mcmc_id':
+                slash_key = 'mcmc/id'
+            elif underscore_key == 'halo_original_index':
+                slash_key = 'halo/original/index'
+
+            # Apply minimal filter
+            if minimal and slash_key not in ["SO/200/crit/CentreOfMass", "SO/200/crit/TotalMass",
+                                              "mcmc/id", "halo/original/index", "SOAP/ProgenitorIndex"]:
+                continue
+
+            member_data[slash_key] = data[start:end]
+
+        # Reconstruct members list for backwards compatibility with Mode 2
+        members = []
+        mcmc_ids = member_data.get('mcmc/id', None)
+        orig_indices = member_data.get('halo/original/index', None)
+
+        if mcmc_ids is not None and orig_indices is not None:
+            for j in range(len(mcmc_ids)):
+                members.append({
+                    'mcmc_id': int(mcmc_ids[j]),
+                    'original_index': int(orig_indices[j])
+                })
+
+        # Helper to convert -1 sentinel back to NaN
+        def to_nan(val):
+            if isinstance(val, (int, float, np.integer, np.floating)) and val < 0:
+                return np.nan
+            return float(val)
+
+        cluster = {
+            'cluster_id': int(cluster_ids[i]),
+            'cluster_size': int(n_members_arr[i]),  # Alias for n_members for Mode 2 compatibility
+            'mean_position': center_xyz[i],
+            'mean_m200_mass': float(mean_m200_masses[i]),
+            'mean_subhalo_mass': to_nan(mean_subhalo_masses[i]),
+            'mean_m500': to_nan(mean_m500s[i]),
+            'position_std': position_stds[i],
+            'm200_mass_std': to_nan(m200_mass_stds[i]),
+            'subhalo_mass_std': to_nan(subhalo_mass_stds[i]),
+            'm500_std': to_nan(m500_stds[i]),
+            'log10_m200_mass_std': to_nan(log10_m200_mass_stds[i]),
+            'log10_m500_std': to_nan(log10_m500_stds[i]),
+            'axis_ratio_ba': to_nan(axis_ratio_bas[i]),
+            'axis_ratio_ca': to_nan(axis_ratio_cas[i]),
+            'asphericity': to_nan(asphericities[i]),
+            'prolateness': to_nan(prolatenesses[i]),
+            'members': members,
+            'member_data': member_data
+        }
+
+        clusters.append(cluster)
+
+    return clusters
+
+
 def load_clusters_from_hdf5(output_dir, filename="clusters.h5", minimal=True,
         min_m200_mass=1e14):
     filepath = os.path.join(output_dir, filename)
-    
+
     clusters = []
     metadata = {}
-    
+
     with h5py.File(filepath, 'r') as f:
         meta_grp = f['metadata']
         for key in meta_grp.attrs.keys():
             metadata[key] = meta_grp.attrs[key]
-        
-        # Handle both old 'clusters' and new 'posterior' group names
+
+        # Check for new flat format (v2)
+        format_version = metadata.get('hdf5_format_version', 1)
+
+        if format_version >= 2 and 'member_index' in f:
+            # New flat format - reconstruct legacy structure for Mode 2
+            clusters = _load_clusters_from_flat_format_for_mode2(f, min_m200_mass, minimal)
+            return clusters, metadata
+
+        # Handle both old 'clusters' and new 'posterior' group names (legacy format)
         if 'posterior' in f:
             posterior_grp = f['posterior']
             group_prefix = 'association_'
