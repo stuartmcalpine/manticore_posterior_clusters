@@ -64,10 +64,19 @@ class ControlHaloTracer:
         """Load and filter haloes from control simulation final snapshot"""
         filename_pattern = self.hdf5_filename_pattern.format(snap_num=self.final_snapshot)
         filename = os.path.join(self.basedir, f"mcmc_{mcmc_id}", self.hdf5_subdir, filename_pattern)
-        
-        soap_data = SOAPData(filename, mass_cut=m200_mass_cut)
+
+        soap_data = SOAPData(filename)
         soap_data.load_groups(properties=self.to_load, only_centrals=True)
         soap_data.set_observer(self.observer_coords, skip_redshift=True, radius_cut=radius_cut)
+
+        # Apply mass cut manually after loading
+        if m200_mass_cut is not None and m200_mass_cut > 0:
+            mass_key = 'SO/200_crit/TotalMass'
+            if mass_key in soap_data.data:
+                mass_mask = soap_data.data[mass_key] >= m200_mass_cut
+                for key in soap_data.data:
+                    if isinstance(soap_data.data[key], np.ndarray) and len(soap_data.data[key]) == len(mass_mask):
+                        soap_data.data[key] = soap_data.data[key][mass_mask]
         
         # Remove redshift
         del soap_data.data["redshift"]
