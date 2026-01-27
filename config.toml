@@ -79,7 +79,7 @@ save_input_catalog = false
 target_snapshot = 10
 
 # Minimum cluster size (number of members) required for tracing
-min_cluster_size = 40
+min_cluster_size = 20
 
 # Allowed log10 mass difference in dex for matching control halos (0.1 dex ~ factor of 1.26)
 mass_tolerance_dex = 0.1
