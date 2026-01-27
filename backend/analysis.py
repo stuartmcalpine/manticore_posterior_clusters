@@ -1,15 +1,27 @@
 import numpy as np
+import h5py
+import os
 from scipy.spatial import ConvexHull
 from .io import load_halo_traces_index, load_specific_halo_traces, load_single_cluster_traces
 from .math_utils import _mean_matter_density_Msun_per_Mpc3, _lagrangian_radius_from_mass, _dimensionless_covariance_metrics
 from .trace_processing import _get_initial_final_positions, _extract_positions_at_or_after_snapshot
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Tuple
+
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 __all__ = [
     'analyze_volume_ratios_batch',
     'find_control_matches_batch',
     'find_control_matches_and_recenter_single',
-    'calculate_lagrangian_volume'
+    'calculate_lagrangian_volume',
+    'save_localization_metrics_to_hdf5',
+    'load_localization_metrics_from_hdf5',
 ]
 
 def analyze_volume_ratios_batch(clusters,
@@ -45,7 +57,7 @@ def analyze_volume_ratios_batch(clusters,
     
     print(f"Loading constrained traces for {len(large_clusters)} clusters...")
     constrained_traces_dict = {}
-    for cluster in large_clusters:
+    for cluster in tqdm(large_clusters, desc="Loading traces", disable=not HAS_TQDM):
         cluster_id = cluster['cluster_id']
         traces = load_single_cluster_traces(cluster_id, output_dir, filename=trace_filename)
         if traces:
@@ -68,13 +80,13 @@ def analyze_volume_ratios_batch(clusters,
     s_ratio_list = []          # dimensionless s_ctrl/s_data
     info_bits_list = []        # info gain in bits
     distances = []             # optional: observer distance
-    
+
     # constants
     rho_m = _mean_matter_density_Msun_per_Mpc3()
     observer = np.array(config.global_config.observer_coords, dtype=float)
     cluster_lookup = {c['cluster_id']: c for c in large_clusters}
-    
-    for cluster_id, results in cluster_results.items():
+
+    for cluster_id, results in tqdm(cluster_results.items(), desc="Computing metrics", disable=not HAS_TQDM):
         constrained_traces = results['constrained_traces']
         control_traces = results['control_traces']
         if len(control_traces) < 4 or len(constrained_traces) < 4:
@@ -458,3 +470,145 @@ def find_control_matches_and_recenter_single(
         return None, None
 
     return results[cluster_id]['constrained_traces'], results[cluster_id]['control_traces']
+
+
+def save_localization_metrics_to_hdf5(
+    cluster_masses: np.ndarray,
+    legacy_volume_ratios: np.ndarray,
+    s_ratios: np.ndarray,
+    info_gain_bits: np.ndarray,
+    cluster_ids: List[int],
+    distances: np.ndarray,
+    output_dir: str,
+    catalog_filename: str,
+    mass_tolerance_dex: float,
+    target_snapshot: int,
+) -> None:
+    """
+    Append localization metrics to an existing cluster catalog HDF5 file.
+
+    Parameters
+    ----------
+    cluster_masses : np.ndarray
+        Mean M200 masses for each cluster
+    legacy_volume_ratios : np.ndarray
+        Convex hull volume ratios (control/constrained)
+    s_ratios : np.ndarray
+        Dimensionless scatter ratios
+    info_gain_bits : np.ndarray
+        Information gain in bits
+    cluster_ids : list
+        List of cluster IDs
+    distances : np.ndarray
+        Observer distances
+    output_dir : str
+        Directory containing the HDF5 file
+    catalog_filename : str
+        Name of the cluster catalog HDF5 file
+    mass_tolerance_dex : float
+        Mass tolerance used for control matching
+    target_snapshot : int
+        Target snapshot used for initial positions
+    """
+    filepath = os.path.join(output_dir, catalog_filename)
+
+    if not os.path.exists(filepath):
+        print(f"Warning: Cannot save localization metrics - file not found: {filepath}")
+        return
+
+    with h5py.File(filepath, 'a') as f:
+        # Remove existing localization_metrics group if present
+        if 'localization_metrics' in f:
+            del f['localization_metrics']
+
+        loc_grp = f.create_group('localization_metrics')
+
+        # Store parameters used for computation
+        loc_grp.attrs['mass_tolerance_dex'] = mass_tolerance_dex
+        loc_grp.attrs['target_snapshot'] = target_snapshot
+        loc_grp.attrs['n_clusters'] = len(cluster_ids)
+
+        # Store arrays
+        loc_grp.create_dataset('cluster_ids', data=np.array(cluster_ids, dtype=np.int32))
+        loc_grp.create_dataset('cluster_masses', data=cluster_masses)
+        loc_grp.create_dataset('legacy_volume_ratios', data=legacy_volume_ratios)
+        loc_grp.create_dataset('s_ratios', data=s_ratios)
+        loc_grp.create_dataset('info_gain_bits', data=info_gain_bits)
+        loc_grp.create_dataset('distances', data=distances)
+
+    print(f"Saved localization metrics for {len(cluster_ids)} clusters to {filepath}")
+
+
+def load_localization_metrics_from_hdf5(
+    output_dir: str,
+    catalog_filename: str,
+    mass_tolerance_dex: Optional[float] = None,
+    target_snapshot: Optional[int] = None,
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[int], np.ndarray, Dict]]:
+    """
+    Load cached localization metrics from an HDF5 file.
+
+    Parameters
+    ----------
+    output_dir : str
+        Directory containing the HDF5 file
+    catalog_filename : str
+        Name of the cluster catalog HDF5 file
+    mass_tolerance_dex : float, optional
+        Expected mass tolerance - if provided, will validate against cached value
+    target_snapshot : int, optional
+        Expected target snapshot - if provided, will validate against cached value
+
+    Returns
+    -------
+    tuple or None
+        (cluster_masses, legacy_volume_ratios, s_ratios, info_gain_bits, cluster_ids, distances, metadata)
+        Returns None if no cached metrics found or parameters don't match
+    """
+    filepath = os.path.join(output_dir, catalog_filename)
+
+    if not os.path.exists(filepath):
+        return None
+
+    try:
+        with h5py.File(filepath, 'r') as f:
+            if 'localization_metrics' not in f:
+                return None
+
+            loc_grp = f['localization_metrics']
+
+            # Check if parameters match (if provided)
+            cached_mass_tol = loc_grp.attrs.get('mass_tolerance_dex', None)
+            cached_target_snap = loc_grp.attrs.get('target_snapshot', None)
+
+            if mass_tolerance_dex is not None and cached_mass_tol is not None:
+                if abs(cached_mass_tol - mass_tolerance_dex) > 1e-6:
+                    print(f"Cached metrics used different mass_tolerance_dex ({cached_mass_tol} vs {mass_tolerance_dex})")
+                    return None
+
+            if target_snapshot is not None and cached_target_snap is not None:
+                if cached_target_snap != target_snapshot:
+                    print(f"Cached metrics used different target_snapshot ({cached_target_snap} vs {target_snapshot})")
+                    return None
+
+            # Load arrays
+            cluster_ids = list(loc_grp['cluster_ids'][:])
+            cluster_masses = loc_grp['cluster_masses'][:]
+            legacy_volume_ratios = loc_grp['legacy_volume_ratios'][:]
+            s_ratios = loc_grp['s_ratios'][:]
+            info_gain_bits = loc_grp['info_gain_bits'][:]
+            distances = loc_grp['distances'][:]
+
+            metadata = {
+                'mass_tolerance_dex': cached_mass_tol,
+                'target_snapshot': cached_target_snap,
+                'n_clusters': loc_grp.attrs.get('n_clusters', len(cluster_ids)),
+            }
+
+            print(f"Loaded cached localization metrics for {len(cluster_ids)} clusters")
+            return (cluster_masses, legacy_volume_ratios, s_ratios, info_gain_bits,
+                    cluster_ids, distances, metadata)
+
+    except Exception as e:
+        print(f"Error loading cached localization metrics: {e}")
+        return None
