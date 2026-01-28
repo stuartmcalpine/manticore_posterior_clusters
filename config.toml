@@ -61,7 +61,7 @@ alpha = 1.0
 
 # DBSCAN parameters (used when clustering_algorithm = "dbscan")
 # Epsilon: maximum distance between two samples for them to be considered neighbors (Mpc)
-eps = 2.5
+eps = 2.75
 
 # Stability classification thresholds
 # Minimum existence probability for 'stable' status
@@ -118,7 +118,7 @@ clustering_algorithm = "dbscan"
 min_cluster_size = 12
 
 # Minimum samples for core point
-min_samples = 12
+min_samples = 10
 
 # Cluster selection epsilon: distance threshold for merging clusters (Mpc)
 # 0.0 = off (default HDBSCAN behavior), >0 = merge clusters closer than this distance
@@ -131,7 +131,7 @@ alpha = 1.0
 
 # DBSCAN parameters (used when clustering_algorithm = "dbscan")
 # Epsilon: maximum distance between two samples for them to be considered neighbors (Mpc)
-eps = 5.0
+eps = 2.75
 
 # Random seed for reproducible observer positions across parameter sweeps
 # Using the same seed ensures fair comparison when varying min_cluster_size/min_samples
