@@ -9,15 +9,19 @@
 #   - n_members: number of member halos in the association
 #   - sigma_R: positional standard deviation in Mpc
 #   - sigma_log_M: mass standard deviation in log10(M/Msol)
+#   - mean_m200_mass: mean M200 mass of association in Msol
 
-Raw: {}  # No cuts - all clusters
+Raw:
+  mean_m200_mass: [1.0e+14, null]  # >= 1e14 Msol
 
 Fiducial:
-  ambiguity_rate: [null, 0.05]  # <= 5%
-  n_members: [20, null]         # >= 20 members
+  mean_m200_mass: [1.0e+14, null]  # >= 1e14 Msol
+  ambiguity_rate: [null, 0.05]     # <= 5%
+  n_members: [20, null]            # >= 20 members
 
 Strict:
-  ambiguity_rate: [null, 0.05]  # <= 5%
-  n_members: [20, null]         # >= 20 members
-  sigma_R: [null, 2.5]          # <= 2.5 Mpc
-  sigma_log_M: [null, 0.25]     # <= 0.25 dex
+  mean_m200_mass: [1.0e+14, null]  # >= 1e14 Msol
+  ambiguity_rate: [null, 0.05]     # <= 5%
+  n_members: [20, null]            # >= 20 members
+  sigma_R: [null, 2.5]             # <= 2.5 Mpc
+  sigma_log_M: [null, 0.25]        # <= 0.25 dex
